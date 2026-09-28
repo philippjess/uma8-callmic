@@ -34,6 +34,13 @@ systemctl --user daemon-reload
 systemctl --user enable uma8-callmic-chain.service
 systemctl --user restart uma8-callmic-chain.service
 
+say "Startmenü-Eintrag und Icon einrichten"
+install -Dm644 "$REPO/uma8_callmic/icons/active.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/uma8-callmic.svg"
+install -Dm644 "$REPO/pipewire/uma8-callmic.desktop" "$HOME/.local/share/applications/uma8-callmic.desktop"
+sed -i "s|@BIN@|$BIN|" "$HOME/.local/share/applications/uma8-callmic.desktop"
+command -v update-desktop-database >/dev/null && update-desktop-database -q "$HOME/.local/share/applications" || true
+command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 >/dev/null 2>&1 || true
+
 say "Autostart einrichten"
 install -Dm644 "$REPO/pipewire/uma8-callmic.desktop" "$HOME/.config/autostart/uma8-callmic.desktop"
 sed -i "s|@BIN@|$BIN|" "$HOME/.config/autostart/uma8-callmic.desktop"

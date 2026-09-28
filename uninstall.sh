@@ -8,7 +8,9 @@ pkill -f "python3 -m uma8_callmic" 2>/dev/null || true
 rm -f "$HOME/.config/pipewire/uma8-callmic.conf" \
       "$HOME/.local/lib/ladspa/libuma8_beam.so" \
       "$HOME/.local/bin/uma8-callmic" \
-      "$HOME/.config/autostart/uma8-callmic.desktop"
+      "$HOME/.config/autostart/uma8-callmic.desktop" \
+      "$HOME/.local/share/applications/uma8-callmic.desktop" \
+      "$HOME/.local/share/icons/hicolor/scalable/apps/uma8-callmic.svg"
 read -r -p "Einstellungen und Log löschen? [j/N] " answer
 if [ "${answer,,}" = "j" ]; then
     rm -rf "$HOME/.config/uma8-callmic" "$HOME/.local/state/uma8-callmic"

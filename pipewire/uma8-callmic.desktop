@@ -1,8 +1,12 @@
 [Desktop Entry]
 Type=Application
 Name=UMA-8 Call Mic
+GenericName=Mikrofon-Verarbeitung
 Comment=Beamforming und Rauschunterdrückung für das miniDSP UMA-8
 Exec=@BIN@
-Icon=audio-input-microphone
+Icon=uma8-callmic
 Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=Mikrofon;Microphone;UMA-8;miniDSP;Rauschunterdrückung;Beamforming;Call;
+StartupNotify=false
 X-KDE-autostart-after=panel
