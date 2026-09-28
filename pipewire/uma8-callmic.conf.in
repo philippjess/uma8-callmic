@@ -1,0 +1,61 @@
+# Erzeugt von uma8-callmic – nicht von Hand ändern, wird überschrieben.
+context.properties = {
+    log.level = 0
+}
+context.spa-libs = {
+    audio.convert.* = audioconvert/libspa-audioconvert
+    support.*       = support/libspa-support
+}
+context.modules = [
+    { name = libpipewire-module-rt
+        args = { }
+        flags = [ ifexists nofail ]
+    }
+    { name = libpipewire-module-protocol-native }
+    { name = libpipewire-module-client-node }
+    { name = libpipewire-module-adapter }
+    { name = libpipewire-module-filter-chain
+        args = {
+            node.description = "UMA-8 Call Mic"
+            media.name       = "UMA-8 Call Mic"
+            audio.rate       = 48000
+            filter.graph = {
+                nodes = [
+                    { type = ladspa name = beam plugin = "@BEAM_PLUGIN@" label = uma8_beam
+                      control = { @BEAM_CONTROLS@ } }
+                    { type = ladspa name = dfn plugin = "@DFN_PLUGIN@" label = deep_filter_mono
+                      control = { @DFN_CONTROLS@ } }
+                    { type = builtin name = mix label = mixer
+                      control = { @MIX_CONTROLS@ } }
+                    { type = ladspa name = limit plugin = "@BEAM_PLUGIN@" label = uma8_limit
+                      control = { @LIMIT_CONTROLS@ } }
+                ]
+                links = [
+                    { output = "beam:Beam Out" input = "dfn:Audio In" }
+                    { output = "dfn:Audio Out" input = "mix:In 1" }
+                    { output = "beam:Raw Out"  input = "mix:In 2" }
+                    { output = "mix:Out"       input = "limit:In" }
+                ]
+                inputs  = [ "beam:In 0" "beam:In 1" "beam:In 2" "beam:In 3" "beam:In 4" "beam:In 5" "beam:In 6" null ]
+                outputs = [ "limit:Out" ]
+            }
+            capture.props = {
+                node.name         = "@CAPTURE_NODE@"
+                node.description  = "UMA-8 Call Mic (Eingang)"
+                node.passive      = true
+                target.object     = "@RAW_DEVICE@"
+                audio.channels    = 8
+                audio.position    = [ FL FR FC LFE RL RR FLC FRC ]
+                stream.dont-remix = true
+            }
+            playback.props = {
+                node.name        = "@SOURCE_NODE@"
+                node.description = "UMA-8 Call Mic"
+                media.class      = Audio/Source
+                audio.channels   = 1
+                audio.position   = [ MONO ]
+                priority.session = 2500
+            }
+        }
+    }
+]

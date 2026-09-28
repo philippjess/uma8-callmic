@@ -1,0 +1,13 @@
+[project]
+name = "uma8-callmic"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]
+testpaths = ["tests"]
+markers = [
+    "integration: braucht laufendes PipeWire und installiertes Plugin",
+    "hardware: braucht das angeschlossene UMA-8",
+]
+addopts = "-m 'not integration and not hardware'"

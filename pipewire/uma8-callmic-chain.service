@@ -1,0 +1,14 @@
+[Unit]
+Description=UMA-8 Call Mic (PipeWire-Filterkette)
+After=pipewire.service pipewire-session-manager.service
+BindsTo=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/pipewire -c %h/.config/pipewire/uma8-callmic.conf
+Restart=on-failure
+RestartSec=2
+Slice=session.slice
+
+[Install]
+WantedBy=default.target

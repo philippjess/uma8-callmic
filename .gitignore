@@ -1,0 +1,9 @@
+# proprietaere miniDSP-Dateien (Firmware, Treiber, DFU-Tool) nicht ins Repo
+firmware/*.bin
+firmware/win-share/
+firmware/backup/
+__pycache__/
+*.so
+*.o
+.pytest_cache/
+target/

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=UMA-8 Call Mic
+Comment=Beamforming und Rauschunterdrückung für das miniDSP UMA-8
+Exec=@BIN@
+Icon=audio-input-microphone
+Terminal=false
+X-KDE-autostart-after=panel

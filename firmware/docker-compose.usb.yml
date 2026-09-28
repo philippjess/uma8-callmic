@@ -1,0 +1,18 @@
+# Ergaenzung zur Bticino-Windows-VM: reicht das miniDSP UMA-8 per USB an Windows durch
+# und stellt die Firmware-Dateien als Freigabe bereit (in Windows: Netzwerk > host.lan > Data).
+#
+# Starten:  docker compose -f /home/tesla/composes/bticino-win/docker-compose.yml \
+#                          -f /home/tesla/githubprojects/uma8-callmic/firmware/docker-compose.usb.yml up -d
+# Stoppen:  dieselben -f Angaben mit "down"
+services:
+  windows:
+    environment:
+      # nur vendorid: greift auch, wenn das Geraet im Update-Modus mit anderer PID neu erscheint
+      ARGUMENTS: "-device qemu-xhci,id=xhci2 -device usb-host,bus=xhci2.0,vendorid=0x2752"
+    # Live-Mount statt "devices": sonst fehlen Geraeteknoten, wenn sich das
+    # Mikrofon beim Update mit neuer USB-Adresse neu anmeldet
+    device_cgroup_rules:
+      - "c 189:* rmw"
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+      - /home/tesla/githubprojects/uma8-callmic/firmware/win-share:/shared
