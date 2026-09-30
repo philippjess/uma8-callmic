@@ -55,6 +55,10 @@ context.modules = [
                 audio.channels   = 1
                 audio.position   = [ MONO ]
                 priority.session = 2500
+                # Nie suspendieren: Jedes Aufwachen instanziiert die Plugins neu, und DeepFilterNet
+                # (deep_filter_ladspa 0.5.6) lässt dabei je einen pollenden Thread zurück.
+                # Das UMA-8 selbst schläft trotzdem, weil der Eingang passiv ist.
+                session.suspend-timeout-seconds = 0
             }
         }
     }

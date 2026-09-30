@@ -26,6 +26,12 @@ def test_render_reflects_active_state():
     assert off == '"Gain 1" = 0 "Gain 2" = 1'
 
 
+def test_source_never_suspends():
+    """Jedes Aufwachen leckt einen DeepFilterNet-Thread, also darf die Quelle nicht schlafen."""
+    playback = re.search(r'playback\.props = \{(.*?)\}', render(Config()), re.S).group(1)
+    assert re.search(r'^\s*session\.suspend-timeout-seconds = 0$', playback, re.M)
+
+
 def test_write_reports_changes(tmp_path):
     path = tmp_path / "uma8-callmic.conf"
     assert write(Config(), path) is True
