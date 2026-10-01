@@ -1,11 +1,19 @@
-"""PipeWire- und Dienststeuerung über pw-dump, pw-cli, systemctl und pactl."""
+"""PipeWire-, Dienst- und Autostart-Steuerung über pw-dump, pw-cli, systemctl und pactl."""
 from __future__ import annotations
 
 import json
+import logging
+import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import constants as K
+
+log = logging.getLogger(__name__)
+#: Antworten von „systemctl is-enabled“, bei denen der Dienst schon beim Login startet
+ENABLED_STATES = {"enabled", "enabled-runtime", "linked", "linked-runtime", "alias", "static", "indirect",
+                  "generated", "transient"}
 
 
 def _run(args: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
@@ -89,8 +97,51 @@ def service(action: str) -> None:
     _run(["systemctl", "--user", action, K.SERVICE], timeout=15.0)
 
 
+def ensure_service_enabled() -> bool:
+    """Erststart ohne install.sh (RPM): Dienst für diesen Benutzer aktivieren und starten.
+
+    Nur im Zustand „disabled“; maskiert bleibt maskiert. True, wenn der Dienst jetzt aktiviert wurde.
+    Fehler werden protokolliert, nie geworfen – das Tray zeigt einen nicht laufenden Dienst ohnehin an."""
+    try:
+        state = _run(["systemctl", "--user", "is-enabled", K.SERVICE]).stdout.strip()
+        if state != "disabled":
+            if state not in ENABLED_STATES:
+                log.warning("Dienst %s wird nicht aktiviert (Zustand: %s)", K.SERVICE, state or "unbekannt")
+            return False
+        r = _run(["systemctl", "--user", "enable", "--now", K.SERVICE], timeout=30.0)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.warning("systemctl fehlgeschlagen: %s", e)
+        return False
+    if r.returncode != 0:
+        log.warning("Dienst %s nicht aktiviert: %s", K.SERVICE, (r.stderr or r.stdout).strip())
+        return False
+    log.info("Dienst %s aktiviert und gestartet", K.SERVICE)
+    return True
+
+
 def set_default_source() -> None:
     _run(["pactl", "set-default-source", K.SOURCE_NODE])
+
+
+def autostart_entry() -> str:
+    """Inhalt der XDG-Autostart-Datei mit dem Startbefehl dieser Installation."""
+    template = (K.DATA_DIR / "uma8-callmic.desktop").read_text()
+    return template.replace("@BIN@", shutil.which("uma8-callmic") or str(K.LAUNCHER))
+
+
+def sync_autostart(enabled: bool, path: Path = K.AUTOSTART_FILE) -> bool:
+    """Autostart-Datei an die Einstellung angleichen; True, wenn sich etwas geändert hat."""
+    if not enabled:
+        if path.exists():
+            path.unlink()
+            return True
+        return False
+    text = autostart_entry()
+    if path.exists() and path.read_text() == text:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return True
 
 
 @dataclass
@@ -99,11 +150,15 @@ class Status:
     service: bool
     chain: bool
     dfn: bool
+    beam: bool = True
 
     @property
     def problem(self) -> str | None:
         if not self.dfn:
-            return "DeepFilterNet nicht installiert (yay -S deepfilternet-plugin-pipewire-bin)"
+            return ("DeepFilterNet nicht installiert (Paket deepfilternet-ladspa, "
+                    "Arch: AUR deepfilternet-plugin-pipewire-bin)")
+        if not self.beam:
+            return "Plugin libuma8_beam.so fehlt (Paket uma8-callmic oder ./install.sh)"
         if self.device == "dsp":
             return "Raw-Firmware nötig (Mikrofon läuft mit DSP-Firmware)"
         if self.device == "missing":
@@ -124,4 +179,5 @@ def status() -> Status:
         running = service_active()
     except (OSError, subprocess.TimeoutExpired):
         running = False
-    return Status(device_state(objs), running, find_node(objs, K.CAPTURE_NODE) is not None, K.DFN_PLUGIN.exists())
+    return Status(device_state(objs), running, find_node(objs, K.CAPTURE_NODE) is not None,
+                  K.dfn_plugin().exists(), K.beam_plugin().exists())

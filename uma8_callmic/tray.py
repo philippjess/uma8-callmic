@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QIcon
@@ -20,7 +19,6 @@ from .tracker import Tracker, TrackerThread
 from .traystate import icon_state, tooltip
 
 log = logging.getLogger(__name__)
-ICON_DIR = K.REPO_DIR / "uma8_callmic" / "icons"
 
 
 class TrayApp:
@@ -33,7 +31,7 @@ class TrayApp:
         self.tracker_capture: Capture | None = None
         self.chain_node: int | None = None
         self.dialogs: dict[str, object] = {}
-        self.icons = {name: QIcon(str(ICON_DIR / f"{name}.svg")) for name in ("active", "inactive", "error")}
+        self.icons = {name: QIcon(str(K.ICON_DIR / f"{name}.svg")) for name in ("active", "inactive", "error")}
 
         self.tray = QSystemTrayIcon(self.icons["inactive"])
         menu = QMenu()
@@ -53,6 +51,10 @@ class TrayApp:
         self.tray.show()
 
         chainconf.write(self.cfg)
+        self.set_autostart(self.cfg.autostart)
+        if pwctl.ensure_service_enabled():  # Erststart ohne install.sh, z. B. nach dem RPM
+            self.tray.showMessage("UMA-8 Call Mic", "Filterkette eingerichtet. „UMA-8 Call Mic“ jetzt in den "
+                                  "Audio-Einstellungen als Mikrofon wählen.")
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh)
         self.timer.start(2000)
@@ -124,12 +126,11 @@ class TrayApp:
         self.refresh()
 
     def set_autostart(self, enabled: bool) -> None:
-        if enabled:
-            template = (K.REPO_DIR / "pipewire" / "uma8-callmic.desktop").read_text()
-            K.AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
-            K.AUTOSTART_FILE.write_text(template.replace("@BIN@", shutil.which("uma8-callmic") or str(K.LAUNCHER)))
-        elif K.AUTOSTART_FILE.exists():
-            K.AUTOSTART_FILE.unlink()
+        """Autostart-Datei angleichen: legt sie auch an, wenn sie fehlt (RPM ohne install.sh)."""
+        try:
+            pwctl.sync_autostart(enabled)
+        except OSError as e:
+            log.warning("Autostart nicht angepasst: %s", e)
 
     def calibrated(self, azimuth: float, elevation: float) -> None:
         self.cfg.calibrated = True

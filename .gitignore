@@ -7,3 +7,9 @@ __pycache__/
 *.o
 .pytest_cache/
 target/
+# Python-Build (pip wheel, setuptools)
+build/
+dist/
+*.egg-info/
+# RPM-Bau: Ergebnisse und Download-Cache von packaging/build-rpms.sh
+packaging/out/

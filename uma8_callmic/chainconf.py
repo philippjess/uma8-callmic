@@ -5,7 +5,7 @@ from . import constants as K
 from .config import Config
 from .params import all_params
 
-TEMPLATE = K.REPO_DIR / "pipewire" / "uma8-callmic.conf.in"
+TEMPLATE = K.DATA_DIR / "uma8-callmic.conf.in"
 
 
 def _controls(params: dict[str, float], node: str) -> str:
@@ -13,10 +13,11 @@ def _controls(params: dict[str, float], node: str) -> str:
     return " ".join(f'"{name}" = {float(value):.6g}' for name, value in items)
 
 
-def render(cfg: Config, beam_plugin: Path = K.BEAM_PLUGIN, dfn_plugin: Path = K.DFN_PLUGIN) -> str:
+def render(cfg: Config, beam_plugin: Path | None = None, dfn_plugin: Path | None = None) -> str:
+    """Plugin-Pfade ohne Angabe werden jetzt bestimmt, nicht beim Import (RPM, install.sh, Umgebung)."""
     params = all_params(cfg)
     subs = {
-        "@BEAM_PLUGIN@": str(beam_plugin), "@DFN_PLUGIN@": str(dfn_plugin),
+        "@BEAM_PLUGIN@": str(beam_plugin or K.beam_plugin()), "@DFN_PLUGIN@": str(dfn_plugin or K.dfn_plugin()),
         "@CAPTURE_NODE@": K.CAPTURE_NODE, "@SOURCE_NODE@": K.SOURCE_NODE, "@RAW_DEVICE@": K.RAW_DEVICE,
         "@BEAM_CONTROLS@": _controls(params, "beam"), "@DFN_CONTROLS@": _controls(params, "dfn"),
         "@MIX_CONTROLS@": _controls(params, "mix"), "@LIMIT_CONTROLS@": _controls(params, "limit"),

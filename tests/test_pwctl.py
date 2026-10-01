@@ -60,6 +60,8 @@ def test_fade_mix_ends_at_target(monkeypatch):
 
 def test_status_problem_priority():
     assert Status("raw", True, True, False).problem.startswith("DeepFilterNet")
+    assert Status("raw", True, True, False, False).problem.startswith("DeepFilterNet")
+    assert "libuma8_beam.so" in Status("raw", True, True, True, False).problem
     assert Status("dsp", True, True, True).problem.startswith("Raw-Firmware")
     assert Status("missing", True, True, True).problem.startswith("UMA-8 nicht")
     assert Status("raw", False, False, True).problem.startswith("Dienst")
@@ -84,3 +86,60 @@ def test_find_raw_source_handles_suffix_after_reconnect():
 def test_raw_source_falls_back_to_default_name(monkeypatch):
     monkeypatch.setattr(pwctl, "dump", lambda: (_ for _ in ()).throw(RuntimeError("weg")))
     assert pwctl.raw_source() == pwctl.K.RAW_DEVICE
+
+
+class _Result:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+
+def _fake_systemctl(monkeypatch, state, enable_rc=0):
+    calls = []
+
+    def run(args, timeout=5.0):
+        calls.append(args)
+        if "is-enabled" in args:
+            return _Result(state + "\n", 0 if state == "enabled" else 1)
+        return _Result(returncode=enable_rc, stderr="Failed to enable unit" if enable_rc else "")
+
+    monkeypatch.setattr(pwctl, "_run", run)
+    return calls
+
+
+def test_ensure_service_enabled_enables_disabled_unit(monkeypatch):
+    calls = _fake_systemctl(monkeypatch, "disabled")
+    assert pwctl.ensure_service_enabled() is True
+    assert calls[-1] == ["systemctl", "--user", "enable", "--now", pwctl.K.SERVICE]
+
+
+@pytest.mark.parametrize("state", ["enabled", "static", "masked", "not-found", ""])
+def test_ensure_service_enabled_leaves_other_states_alone(monkeypatch, state):
+    calls = _fake_systemctl(monkeypatch, state)
+    assert pwctl.ensure_service_enabled() is False
+    assert all("enable" not in c for c in calls)
+
+
+def test_ensure_service_enabled_never_raises(monkeypatch):
+    _fake_systemctl(monkeypatch, "disabled", enable_rc=1)
+    assert pwctl.ensure_service_enabled() is False
+
+    def broken(args, timeout=5.0):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(pwctl, "_run", broken)
+    assert pwctl.ensure_service_enabled() is False
+
+
+def test_sync_autostart(tmp_path, monkeypatch):
+    path = tmp_path / "autostart" / "uma8-callmic.desktop"
+    monkeypatch.setattr(pwctl.shutil, "which", lambda name: "/usr/bin/uma8-callmic")
+    assert pwctl.sync_autostart(True, path) is True
+    text = path.read_text()
+    assert "Exec=/usr/bin/uma8-callmic\n" in text and "@" not in text
+    assert pwctl.sync_autostart(True, path) is False
+    monkeypatch.setattr(pwctl.shutil, "which", lambda name: None)  # Entwickler-Installation
+    assert pwctl.sync_autostart(True, path) is True
+    assert f"Exec={pwctl.K.LAUNCHER}\n" in path.read_text()
+    assert pwctl.sync_autostart(False, path) is True
+    assert not path.exists()
+    assert pwctl.sync_autostart(False, path) is False
