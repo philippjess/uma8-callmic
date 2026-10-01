@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -41,7 +42,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="PipeWire-Konfiguration aus den Einstellungen schreiben und beenden")
     ap.add_argument("--check-geometry", action="store_true",
                     help="Kanalzuordnung 10 s lang prüfen und Ergebnis ausgeben")
+    ap.add_argument("--ref-linker", action="store_true",
+                    help="Echo-Referenz nur während einer Aufnahme verbinden (startet die Kette selbst)")
     args = ap.parse_args(argv)
+
+    if args.ref_linker:  # läuft im Dienst der Kette: Meldungen ins Journal, nicht ins Log des Trays
+        from .reflink import METADATA_ENV, run
+
+        logging.basicConfig(level=logging.INFO, format="uma8-callmic --ref-linker: %(levelname)s %(message)s")
+        return run(os.environ.get(METADATA_ENV) or "default")
 
     K.STATE_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",

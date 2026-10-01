@@ -1,5 +1,6 @@
 """Pfade, Knotennamen und gemessene Latenzen."""
 import os
+import shutil
 from pathlib import Path
 
 SAMPLE_RATE = 48000
@@ -14,6 +15,8 @@ SOURCE_NODE = "uma8_callmic"
 #: Interne Quellen der Echounterdrückung (Audio/Source/Internal: für Programme unsichtbar, nie Standard)
 PRE_NODE = "uma8_callmic_pre"
 AEC_NODE = "uma8_callmic_aec"
+#: Referenz-Stream der Echounterdrückung; verbunden nur während einer Aufnahme (reflink.py)
+AEC_REF_NODE = "uma8_callmic_aec_ref"
 SERVICE = "uma8-callmic-chain.service"
 #: Vorverstärkung vor der Echounterdrückung. Offline mit der PipeWire-AEC3-Konfiguration gemessen (synthetischer
 #: Raum, Rohpegel ≈ −75 dBFS Grundrauschen): ohne Verstärkung ERLE 19 statt 25 dB und Sprache des Nutzers bei
@@ -49,6 +52,11 @@ def find_plugin(so_name: str, env_var: str) -> Path:
         return Path(override).expanduser()
     candidates = [d / so_name for d in LADSPA_DIRS]
     return next((p for p in candidates if p.exists()), candidates[1])
+
+
+def launcher() -> str:
+    """Startbefehl dieser Installation: RPM /usr/bin/uma8-callmic, sonst der von install.sh."""
+    return shutil.which("uma8-callmic") or str(LAUNCHER)
 
 
 def beam_plugin() -> Path:

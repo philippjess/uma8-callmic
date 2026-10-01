@@ -65,15 +65,17 @@ Kalibrierung (Rechtsklick → Kalibrieren…).
 Entfernt aus allen 7 Mikrofonen, was die Lautsprecher abspielen, bevor Beamforming und Rauschunterdrückung
 laufen. Das Gegenüber hört sich nicht mehr selbst, und sein Anruf-Programm schaltet bei Gegensprechen nicht
 mehr das eigene Mikrofon stumm. Als Referenz dient die jeweilige Standardausgabe (PipeWire-Modul `echo-cancel`,
-WebRTC AEC3); ein Wechsel der Standardausgabe wird übernommen.
+WebRTC AEC3); ein Wechsel der Standardausgabe wird übernommen, auch mitten im Anruf.
 
 - Die Echounterdrückung der Anruf-Programme kann an bleiben.
 - Nur Ton auf der Standardausgabe wird entfernt. Gibt das Anruf-Programm auf einem anderen Gerät aus, bleibt
   dessen Echo.
 - Spricht man gleichzeitig mit dem Gegenüber, wird die eigene Stimme leiser, umso mehr, je lauter die
   Lautsprecher am Mikrofon ankommen. Lautsprecher leiser oder weiter weg hilft.
-- Nachteil: Jede Wiedergabe auf der Standardausgabe (Musik, Video) weckt die ganze Kette samt UMA-8, auch
-  ohne Anruf, und kostet dann Rechenzeit.
+- Die Referenz ist nur verbunden, solange ein Programm von „UMA-8 Call Mic“ aufnimmt: Musik und Videos ohne
+  Anruf wecken die Kette nicht. Das erledigt ein kleiner Helfer (`uma8-callmic --ref-linker`), der mit dem
+  Dienst startet und endet; er verbindet beim Start einer Aufnahme nach rund 50 ms und trennt 2 s nach ihrem
+  Ende. Läuft er nicht, funktioniert das Mikrofon weiter, nur ohne Echounterdrückung.
 - „Verstärkung“ bleibt die Gesamtverstärkung; 24 dB davon liegen vor der Echounterdrückung.
 - Ausschalten: Optionen → „Echounterdrückung (Lautsprecher)“. Das startet die Filterkette neu (kurze
   Tonpause). Ohne Tray: `echo_cancel = false` in `~/.config/uma8-callmic/config.toml`, dann
@@ -82,7 +84,7 @@ WebRTC AEC3); ein Wechsel der Standardausgabe wird übernommen.
 ## Aufbau
 
 ```
-UMA-8 (7 Mikros) ─► +24 dB ─► Echounterdrückung (Referenz: Standardausgabe)
+UMA-8 (7 Mikros) ─► +24 dB ─► Echounterdrückung (Referenz: Standardausgabe, nur während einer Aufnahme)
    ─► uma8_beam (Beamforming, Hall) ─► DeepFilterNet ─┐
       └─ Roh-Weg (Mittel-Mikrofon, latenzangeglichen) ─┴► Umschalter ─► Begrenzer ─► „UMA-8 Call Mic“
 ```

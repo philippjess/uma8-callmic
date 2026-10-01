@@ -64,6 +64,9 @@ UMA-8 (Kanal 0–6, 48 kHz)          ein PipeWire-Prozess (systemd --user: uma8-
    ▼                                                 │
 „UMA-8 Call Mic“ (Audio/Source, hohe Priorität) ◄────┘
 
+uma8-callmic --ref-linker (im selben Dienst, nur mit Echounterdrückung): verbindet
+   die Referenz nur, solange ein Programm „UMA-8 Call Mic“ aufnimmt
+
 Tray-Programm (Python/PySide6)
    ├─ zeigt Zustand, schaltet um (pw-cli set-param, live)
    ├─ Optionen, Kalibrierung, Kanalzuordnung
@@ -311,7 +314,8 @@ Aufbau, alles im selben PipeWire-Prozess, nur mit `echo_cancel = true`
   auf ±10 (+20 dB), deshalb zwei gleiche Stufen (×3,98) je Kanal. Ausgang
   `uma8_callmic_pre`, `Audio/Source/Internal`, `AUX0–6`.
 - **echo-cancel** mit `monitor.mode = true`: Referenz ist der Monitor der
-  Standardausgabe (Stereo), WirePlumber folgt deren Wechsel. Eingang
+  Standardausgabe (Stereo), verbunden aber nur während einer Aufnahme (siehe
+  „Referenz nur während einer Aufnahme“). Eingang
   `uma8_callmic_pre` (passiv), Ausgang `uma8_callmic_aec`
   (`Audio/Source/Internal`, 7 Kanäle). WebRTC AEC3 rechnet je Kanal ein
   eigenes lineares Filter; die nichtlineare Nachunterdrückung ist für alle
@@ -365,13 +369,97 @@ nicht mehr linear entfernen. Mit der Standardverstärkung von 30 dB setzt der
 Begrenzer am Ende schon ab −31 dBFS Rohspitze ein; betroffen sind nur sehr
 laute Quellen nah am Array (Lautsprecher daneben, Klopfen auf den Tisch).
 
+#### Referenz nur während einer Aufnahme (`reflink.py`)
+
+Dauerhaft mit dem Monitor verbunden, weckte jede Wiedergabe auf der
+Standardausgabe die ganze Kette samt UMA-8, AEC, Beam und DeepFilterNet, auch
+ohne Anruf (DeepFilterNet allein ≈ 18 % eines 5950X-Kerns; auf einem Laptop
+Akku und Lüfter). Ursache in PipeWire 1.6.9, `src/pipewire/context.c`
+(`run_nodes` Z. 999, `collect_nodes` Z. 1080–1205): Ab einem lauffähigen
+Knoten folgt `run_nodes` allen vorbereiteten Links, passive eingeschlossen,
+und allen Knoten derselben `node.group`/`node.link-group`. Wiedergabe-Stream →
+Senke → Monitor → Referenz-Stream → (Gruppe des Moduls) AEC-Eingang und
+-Ausgang → Vorverstärkung → UMA-8 sowie → Hauptkette → `uma8_callmic`.
+
+Ohne verbundene Referenz arbeitet das Modul weiter
+(`src/modules/module-echo-cancel.c`, 1.6.9): `process()` läuft nur, wenn
+Aufnahme- und Referenz-Stream im selben Zyklus geliefert haben
+(`capture_cycle == sink_cycle`, Z. 577–583 und 987–993). Der Referenz-Stream
+trägt aber die `node.group` des Moduls (Z. 1357–1360, 1422–1423), wird also mit
+dem Aufnahme-Stream eingeplant (live: „running“ ohne Link), sein Adapter
+liefert Stille, und `aec_run` bekommt eine Null-Referenz (Z. 431). WebRTC AEC3
+reicht das Mikrofon dann durch, gemessen an `uma8_callmic_pre` gegen
+`uma8_callmic_aec`: 150 Hz–4,8 kHz Kohärenz ≥ 0,999 bei −0,7…+0,1 dB, darunter
+der Hochpass (60–150 Hz −4 dB), darüber Kohärenz 0,89–0,95 bei −0,8…−0,1 dB. Kein
+Stocken, auch nicht beim Trennen mitten in der Aufnahme. Fehlt der Helfer,
+bleibt das Mikrofon also nutzbar, nur ohne Echounterdrückung.
+
+Umsetzung:
+
+- Referenz-Stream mit `node.autoconnect = false` (`stream.c` setzt den
+  Schlüssel nur, wenn er fehlt): WirePlumber verbindet ihn nie.
+- `uma8-callmic --ref-linker` verbindet den Monitor der Standardausgabe
+  (`default.audio.sink` der Metadaten „default“) passiv mit der Referenz
+  (`pw-link -P`, Kanal für Kanal; Mono-Senke auf beide, ohne gemeinsame
+  Kanalnamen der Reihe nach), sobald ein Knoten hinter `uma8_callmic` läuft,
+  und trennt 2 s nach der letzten Aufnahme (Programme öffnen das Mikrofon beim
+  Anrufstart oft mehrmals). Wechselt die Standardausgabe im Anruf: erst neu
+  verbinden, dann trennen.
+- Kriterium ist ein laufender Abnehmer, nicht der Zustand von `uma8_callmic`:
+  Mit verbundener Referenz hält schon Musik die ganze Kette samt
+  `uma8_callmic` auf „running“ (aufgezeichnet: `tests/data/reflink_graphs.json`,
+  Zustand `ended`), die Referenz bliebe für immer verbunden. Gestoppte
+  Abnehmer (corked) laufen nicht und zählen nicht.
+- Ereignisgesteuert: liest `pw-dump --monitor` (geänderte Objekte vollständig,
+  entfernte als `"info": null`, von Metadaten nur geänderte Einträge) und
+  entscheidet nach jedem Änderungsblock und nach Ablauf der Wartezeit; kein
+  Abfragen. Standardausgabe noch unbekannt (direkt nach dem Start): nichts
+  ändern. Angeforderte Links gelten 2 s als unterwegs, danach neuer Versuch.
+  Endet pw-dump, startet er ihn neu (2 s, bei wiederholtem Scheitern bis 60 s).
+- Lebensdauer: Die Kettenkonfiguration startet ihn per `context.exec`
+  (PipeWire 1.6.9: `src/pipewire/conf.c` Z. 942–1090, in
+  `pw_context_new` nach Modulen und Objekten, `context.c` Z. 577), nur mit
+  `echo_cancel = true`. Doppelter fork; der Prozess bleibt in der cgroup des
+  Dienstes und endet mit ihm, kein eigener Dienst, nichts zu paketieren.
+  Er gibt beim Start die geerbte Signalmaske frei: PipeWire blockiert
+  SIGINT/SIGTERM (liest sie per signalfd), sonst überhörte er SIGTERM
+  (gemessen: Stopp wartete 45 s, dann SIGABRT). Ohne systemd (Kette von Hand
+  gestartet) endet er 5 s, nachdem der Referenz-Knoten verschwunden ist.
+- Stirbt er allein, bleiben bestehende Links; der laufende Anruf ist
+  ungestört. Bis zum nächsten Start des Dienstes fehlt dann bei neuen Anrufen
+  die Echounterdrückung bzw. weckt eine verbliebene Verbindung wieder. Neu
+  gestartet übernimmt er vorhandene Links und trennt verwaiste sofort.
+- Tests: Entscheidungslogik auf aufgezeichneten pw-dump-Graphen der
+  Testkette (`tests/test_reflink.py`). Für Live-Tests nennt `UMA8_REF_METADATA`
+  ein eigenes Metadaten-Objekt statt „default“, die Standardausgabe des Nutzers
+  bleibt unberührt.
+
+Messung im echten Graphen (Testkette ohne UMA-8 wie oben, Referenz über eine
+Testsenke mit eigenem Takt, Ryzen 9 5950X):
+
+| Messung | Ergebnis |
+|---|---|
+| Musik auf der Senke, niemand nimmt auf | Kette bleibt „suspended“, keine Links zur Referenz; Kettenprozess 0,3–0,9 % (davon die Testsenke), dauerhaft verbundene Referenz: 5,9 % |
+| Aufnahme beginnt → Referenz verbunden | 39–50 ms ab Start von pw-record, 6–15 ms ab „running“ des Abnehmers (5 Läufe) |
+| Aufnahme endet → getrennt | 2,01 s, danach Kette „idle“, UMA-8 und AEC „suspended“ |
+| Standardausgabe wechselt im Anruf | neue Links nach 15 ms, alte nach 24 ms entfernt |
+| Echo −45 dBFS ohne diffusen Nachhall | Einschwingen 1,5–5 s 40,7 dB, eingeschwungen 41,0 dB leiser (dauerhaft verbunden, selber Lauf: 38,4/42,6 dB; früher: 42,3/43,3 dB); Gegensprechen −9,7 dB |
+| CPU des Helfers samt pw-dump | Leerlauf und Musik ohne Anruf 0 ms in 30 s, im Anruf 1,2 ms in 30 s, je Anrufende ≈ 50 ms, Start ≈ 0,25 s; 25 + 8 MB |
+| Helfer im Anruf per `kill -9` beendet | Links bleiben, Anruf ungestört; neu gestartet übernimmt er sie bzw. trennt sofort, wenn der Anruf inzwischen vorbei ist |
+
 Bekannte Nachteile:
 
-- Jede Wiedergabe auf der Standardausgabe weckt die ganze Kette samt UMA-8,
-  auch ohne Anruf: Der Referenz-Stream ist passiv mit dem Monitor verbunden,
-  und PipeWire plant über die `node.group` des Moduls die ganze AEC mit
-  (live gesehen: alle Knoten „running“, ohne Aufnahme). Abhilfe wäre eine
-  dynamisch verbundene Referenz (WirePlumber-Skript); nicht umgesetzt.
+- Die ersten ≈ 50 ms einer Aufnahme laufen ohne Referenz (AEC reicht durch).
+  Beim Verbinden kommen Lautsprecher und UMA-8 in einen gemeinsamen Takt (einer
+  folgt mit Resampling); läuft dabei Musik, ist ein kurzer Aussetzer auf den
+  Lautsprechern denkbar (nicht gemessen, mit dauerhaft verbundener Referenz
+  passierte dasselbe beim Start jeder Wiedergabe).
+- Nachführung: Der Tracker liest `uma8_callmic_aec` dauerhaft und hält damit
+  UMA-8, AEC und Hauptkette samt DeepFilterNet wach (live: alles „running“,
+  Kettenprozess 6,8 %). Ohne Anruf hört er die Lautsprecher jetzt ungefiltert,
+  Sprache aus Videos kann den Strahl dann zum Lautsprecher ziehen; im Anruf ist
+  sie entfernt, und nach ≈ 1 s eigener Sprache folgt der Strahl wieder dem
+  Nutzer.
 - Nur Ton auf der Standardausgabe wird entfernt. Gibt das Anruf-Programm auf
   einem anderen Gerät aus, bleibt dessen Echo.
 - Die eigene AEC der Anruf-Programme darf an bleiben; sie findet kaum noch
@@ -397,7 +485,8 @@ Module:
 | `capture.py` | Mehrkanal-Aufnahme über einen `pw-record`-Unterprozess (float32, 48 kHz), Ringpuffer. Immer mit den Kanalpositionen der Quelle (`--channel-map`): pw-record nähme sonst 7.1 bzw. 7.0, und PipeWire mischte um (gemessen: FLC/FRC landeten in FL/FR, Kanal 6/7 blieben stumm; an der AEC-Quelle kamen nur AUX0/1 an). Ohne Ausweichen aufs Standardmikrofon (`node.dont-fallback`): fehlt die Quelle, endet die Aufnahme |
 | `doa.py` | Richtungsschätzung: SRP-PHAT über 72 Azimuth- × 4 Elevationswerte, Sprachaktivitätserkennung (Energie + spektrale Flachheit) |
 | `geometry.py` | Kanalzuordnung und Radius aus Raumrauschen: Kohärenzmatrix, Mittel-Mikrofon = höchste mittlere Kohärenz, Ringreihenfolge und Radius per Fit an sinc(k·d) |
-| `tracker.py` | Nachführung: alle 0,2 s DOA bei Sprache, Median über 1 s, Hysterese 15°, setzt Azimuth. Hört mit Echounterdrückung auf `uma8_callmic_aec` (7 Kanäle): Sprache aus den Lautsprechern ist dort entfernt, der Strahl folgt nie dem Lautsprecher (im Test erkannte die Sprachaktivität Lautsprecher-Sprache vor der AEC in 39 von 43 Blöcken, dahinter in 3). Kalibrierung und Kanalzuordnung lesen weiter das UMA-8 direkt. Endet die Aufnahme (Kette neu gestartet), verbindet das Tray neu |
+| `reflink.py` | Echo-Referenz nur während einer Aufnahme verbinden (`uma8-callmic --ref-linker`, gestartet per `context.exec` der Kette): `pw-dump --monitor` lesen, Monitor der Standardausgabe per `pw-link` verbinden/trennen; Entscheidungslogik ohne PipeWire testbar |
+| `tracker.py` | Nachführung: alle 0,2 s DOA bei Sprache, Median über 1 s, Hysterese 15°, setzt Azimuth. Hört mit Echounterdrückung auf `uma8_callmic_aec` (7 Kanäle): Im Anruf ist Sprache aus den Lautsprechern dort entfernt, der Strahl folgt dann nicht dem Lautsprecher; ohne Anruf ist die Referenz getrennt (im Test erkannte die Sprachaktivität Lautsprecher-Sprache vor der AEC in 39 von 43 Blöcken, dahinter in 3). Kalibrierung und Kanalzuordnung lesen weiter das UMA-8 direkt. Endet die Aufnahme (Kette neu gestartet), verbindet das Tray neu |
 | `chainconf.py` | erzeugt `uma8-callmic.conf` aus Vorlage und Einstellungen |
 | `tray.py` | Icon, Menü, Umschalten, Zustandsabfrage alle 2 s |
 | `dialogs.py` | Optionen, Kalibrierung, Kanalzuordnung |
@@ -465,6 +554,7 @@ arbeiten.
 | Dienst abgestürzt | systemd startet neu; Tray zeigt rot, bis er wieder läuft |
 | Nachführung ohne Audio | Azimuth bleibt stehen, Hinweis im Tooltip |
 | Echounterdrückung an, aber nicht in der laufenden Kette | Tray rot: „Echounterdrückung nicht geladen (Dienst … neu starten)“ |
+| Referenz-Helfer beendet | Mikrofon läuft weiter, bei neuen Anrufen ohne Echounterdrückung; startet mit dem Dienst neu (Meldungen im Journal des Dienstes) |
 | Kaputte config.toml | Standardwerte, Hinweis im Tray; vor dem nächsten Speichern wird die kaputte Datei als `config.toml.broken` gesichert |
 | `pw-cli` schlägt fehl | Fehler im Tooltip und im Log (`~/.local/state/uma8-callmic/log`) |
 
@@ -507,7 +597,12 @@ Python (pytest):
   startet in einem Probelauf (`pipewire -c <datei>`, 2 s) ohne Fehler; beide
   Kettenvarianten werden geparst (SPA-JSON) und geprüft: Knotennamen,
   Klassen, Kanalzahlen und -positionen, `aec.args`, Gesamtverstärkung jeder
-  Vorverstärkungsstrecke, `null`-Eingang nur ohne Echounterdrückung
+  Vorverstärkungsstrecke, `null`-Eingang nur ohne Echounterdrückung,
+  Referenz ohne Autoconnect, Helfer per `context.exec` nur mit ihr
+- `reflink.py`: Entscheidungen auf aufgezeichneten pw-dump-Graphen der
+  Testkette (Musik ohne Anruf, Anruf beginnt, verbunden, Anruf vorbei mit
+  laufender Kette), Wartezeit, Wechsel der Standardausgabe, Neustart mitten im
+  Anruf, Zerlegung der pw-dump-Ausgabe in beliebigen Stücken, Neustart-Pausen
 
 Integration (manuell ausgelöst, braucht das Gerät):
 

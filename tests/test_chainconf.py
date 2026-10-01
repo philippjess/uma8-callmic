@@ -107,7 +107,10 @@ def test_echo_cancel_chain_structure():
     assert a["source.props"]["node.name"] == K.AEC_NODE
     assert a["source.props"]["media.class"] == "Audio/Source/Internal"
     assert a["source.props"]["audio.position"] == mics
-    assert a["sink.props"]["audio.position"] == ["FL", "FR"] and "target.object" not in a["sink.props"]
+    # Referenz: WirePlumber verbindet sie nie (sonst weckte jede Wiedergabe die Kette), das macht reflink
+    ref = a["sink.props"]
+    assert ref["node.name"] == K.AEC_REF_NODE and ref["node.autoconnect"] == "false"
+    assert ref["audio.position"] == ["FL", "FR"] and "target.object" not in ref
     assert a["aec.args"] == {"webrtc.high_pass_filter": "true", "webrtc.noise_suppression": "false",
                              "webrtc.gain_control": "false"}
 
@@ -119,6 +122,16 @@ def test_echo_cancel_chain_structure():
 
     names = [m["args"][k]["node.name"] for m in (pre, aec, main) for k in m["args"] if k.endswith(".props")]
     assert len(names) == len(set(names)) == 7 and all(n.startswith("uma8_callmic") for n in names)
+
+
+@pytest.mark.parametrize("echo", [True, False])
+def test_ref_linker_starts_with_chain_only_with_echo_cancel(echo, monkeypatch):
+    monkeypatch.setattr(K.shutil, "which", lambda name: "/usr/bin/uma8-callmic")
+    conf = loads(render(Config(echo_cancel=echo)))
+    if echo:
+        assert conf["context.exec"] == [{"path": "/usr/bin/uma8-callmic", "args": ["--ref-linker"]}]
+    else:
+        assert "context.exec" not in conf
 
 
 def test_echo_cancel_moves_gain_before_aec():
@@ -194,8 +207,10 @@ def test_config_starts_in_pipewire(tmp_path, echo):
     """Probelauf: braucht installiertes Plugin (install.sh) und laufendes PipeWire. Niedrige Priorität, damit die
     Probe-Quelle nie Standardmikrofon wird (fehlt das konfigurierte, wählt WirePlumber nach Priorität)."""
     path = tmp_path / "probe.conf"
-    path.write_text(render(Config(echo_cancel=echo)).replace('"uma8_callmic', '"uma8_callmic_probe')
-                    .replace("priority.session = 2500", "priority.session = 1"))
+    text = render(Config(echo_cancel=echo)).replace('"uma8_callmic', '"uma8_callmic_probe')
+    text = text.replace("priority.session = 2500", "priority.session = 1")
+    # Ohne Referenz-Helfer: dessen Prozess überlebte die Probe (doppelter fork, kein systemd-Dienst)
+    path.write_text(re.sub(r"\ncontext\.exec = \[.*?\n\]\n", "\n", text, flags=re.S))
     proc = subprocess.Popen(["pipewire", "-c", str(path)], stderr=subprocess.PIPE, text=True)
     time.sleep(2)
     proc.terminate()

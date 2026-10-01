@@ -100,6 +100,9 @@ export CARGO_HOME="$PWD/plugin/.cargo" QT_QPA_PLATFORM=offscreen
 testhome="$(mktemp -d)"
 (cd "$testhome" && HOME="$testhome" %{py3_test_envvars} %{buildroot}%{_bindir}/uma8-callmic --write-config)
 grep -q 'label = deep_filter_mono' "$testhome/.config/pipewire/uma8-callmic.conf"
+# Echo-Referenz-Helfer startet mit der Kette (context.exec), WirePlumber verbindet die Referenz nicht
+grep -q 'args = \[ "--ref-linker" \]' "$testhome/.config/pipewire/uma8-callmic.conf"
+grep -q 'node.autoconnect = false' "$testhome/.config/pipewire/uma8-callmic.conf"
 rm -rf "$testhome"
 
 %post

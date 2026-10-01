@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -146,7 +145,7 @@ def set_default_source() -> None:
 def autostart_entry() -> str:
     """Inhalt der XDG-Autostart-Datei mit dem Startbefehl dieser Installation."""
     template = (K.DATA_DIR / "uma8-callmic.desktop").read_text()
-    return template.replace("@BIN@", shutil.which("uma8-callmic") or str(K.LAUNCHER))
+    return template.replace("@BIN@", K.launcher())
 
 
 def sync_autostart(enabled: bool, path: Path = K.AUTOSTART_FILE) -> bool:

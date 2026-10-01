@@ -54,11 +54,17 @@ def _aec_modules() -> str:
     subs = {
         "@PRE_GAIN_DB@": f"{K.AEC_PRE_GAIN_DB:g}", **_pre_graph(K.AEC_PRE_GAIN_DB),
         "@PRE_CAPTURE_NODE@": K.PRE_NODE + "_capture", "@PRE_NODE@": K.PRE_NODE,
-        "@AEC_CAPTURE_NODE@": K.AEC_NODE + "_capture", "@AEC_REF_NODE@": K.AEC_NODE + "_ref",
+        "@AEC_CAPTURE_NODE@": K.AEC_NODE + "_capture", "@AEC_REF_NODE@": K.AEC_REF_NODE,
         "@AEC_NODE@": K.AEC_NODE, "@RAW_DEVICE@": K.RAW_DEVICE, "@RAW_POSITIONS@": _words(K.RAW_POSITIONS),
         "@MICS@": str(K.MICS), "@MIC_POSITIONS@": _words(K.MIC_POSITIONS),
     }
     return _fill(AEC_TEMPLATE.read_text(), subs)
+
+
+def _aec_exec() -> str:
+    """Startet den Helfer für die Echo-Referenz mit der Kette; er liegt in deren cgroup und endet mit dem Dienst."""
+    return ("\n# Echo-Referenz nur während einer Aufnahme verbinden (uma8_callmic/reflink.py)\n"
+            f'context.exec = [\n    {{ path = "{K.launcher()}" args = [ "--ref-linker" ] }}\n]\n')
 
 
 def render(cfg: Config, beam_plugin: Path | None = None, dfn_plugin: Path | None = None) -> str:
@@ -76,6 +82,7 @@ def render(cfg: Config, beam_plugin: Path | None = None, dfn_plugin: Path | None
                    "@CAPTURE_POSITIONS@": _words(K.RAW_POSITIONS), "@BEAM_INPUTS@": _words(beam_inputs + ["null"])}
     subs = {
         "@AEC_MODULES@\n": _aec_modules() if cfg.echo_cancel else "",
+        "@AEC_EXEC@\n": _aec_exec() if cfg.echo_cancel else "",
         "@BEAM_PLUGIN@": str(beam_plugin or K.beam_plugin()), "@DFN_PLUGIN@": str(dfn_plugin or K.dfn_plugin()),
         "@CAPTURE_NODE@": K.CAPTURE_NODE, "@SOURCE_NODE@": K.SOURCE_NODE, **capture,
         "@BEAM_CONTROLS@": _controls(params, "beam"), "@DFN_CONTROLS@": _controls(params, "dfn"),

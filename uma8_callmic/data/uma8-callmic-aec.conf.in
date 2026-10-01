@@ -38,8 +38,10 @@
     }
     { name = libpipewire-module-echo-cancel
         args = {
-            # Referenz = Monitor der Standardausgabe; WirePlumber folgt einem Wechsel der Standardausgabe.
-            # Jede Wiedergabe dort weckt die ganze Kette mit (gemeinsame node.group), auch ohne Anruf.
+            # Referenz = Monitor der Standardausgabe, aber nur während einer Aufnahme von „UMA-8 Call Mic“:
+            # verbunden wird sie von „uma8-callmic --ref-linker“ (context.exec unten), nicht von WirePlumber.
+            # Dauerhaft verbunden weckte jede Wiedergabe dort die ganze Kette (gemeinsame node.group).
+            # Unverbunden liefert der Referenz-Stream Stille, die AEC reicht das Mikrofon dann durch.
             monitor.mode = true
             capture.props = {
                 node.name         = "@AEC_CAPTURE_NODE@"
@@ -59,6 +61,7 @@
             sink.props = {
                 node.name        = "@AEC_REF_NODE@"
                 node.description = "UMA-8 Call Mic (Echo-Referenz)"
+                node.autoconnect = false
                 audio.position   = [ FL FR ]
             }
             # WebRTC AEC3, je Mikrofon ein eigenes lineares Filter. Rauschunterdrückung und Pegelregelung aus:

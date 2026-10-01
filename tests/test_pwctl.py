@@ -134,12 +134,12 @@ def test_ensure_service_enabled_never_raises(monkeypatch):
 
 def test_sync_autostart(tmp_path, monkeypatch):
     path = tmp_path / "autostart" / "uma8-callmic.desktop"
-    monkeypatch.setattr(pwctl.shutil, "which", lambda name: "/usr/bin/uma8-callmic")
+    monkeypatch.setattr(pwctl.K.shutil, "which", lambda name: "/usr/bin/uma8-callmic")
     assert pwctl.sync_autostart(True, path) is True
     text = path.read_text()
     assert "Exec=/usr/bin/uma8-callmic\n" in text and "@" not in text
     assert pwctl.sync_autostart(True, path) is False
-    monkeypatch.setattr(pwctl.shutil, "which", lambda name: None)  # Entwickler-Installation
+    monkeypatch.setattr(pwctl.K.shutil, "which", lambda name: None)  # Entwickler-Installation
     assert pwctl.sync_autostart(True, path) is True
     assert f"Exec={pwctl.K.LAUNCHER}\n" in path.read_text()
     assert pwctl.sync_autostart(False, path) is True
