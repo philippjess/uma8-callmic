@@ -1,0 +1,72 @@
+    # Echounterdrückung (Einstellung „echo_cancel“): UMA-8 → Vorverstärkung → AEC → Hauptkette.
+    # Beide Zwischenquellen sind Audio/Source/Internal: für Programme und die Lautstärkeregelung unsichtbar,
+    # nie Standardmikrofon, aber per target.object verbindbar. Alle Eingänge sind passiv.
+    { name = libpipewire-module-filter-chain
+        args = {
+            node.description = "UMA-8 Call Mic (Vorverstärkung)"
+            media.name       = "UMA-8 Call Mic (Vorverstärkung)"
+            audio.rate       = 48000
+            filter.graph = {
+                # @PRE_GAIN_DB@ dB je Mikrofon, damit die AEC normale Pegel sieht (Rohsignal ≈ −75 dBFS Rauschen).
+                # builtin „linear“ begrenzt „Mult“ auf 10 (+20 dB), daher mehrere gleiche Stufen je Kanal.
+                nodes = [
+@PRE_NODES@
+                ]
+                links = [
+@PRE_LINKS@
+                ]
+                inputs  = [ @PRE_INPUTS@ null ]
+                outputs = [ @PRE_OUTPUTS@ ]
+            }
+            capture.props = {
+                node.name         = "@PRE_CAPTURE_NODE@"
+                node.description  = "UMA-8 Call Mic (Vorverstärkung, Eingang)"
+                node.passive      = true
+                target.object     = "@RAW_DEVICE@"
+                audio.channels    = 8
+                audio.position    = [ @RAW_POSITIONS@ ]
+                stream.dont-remix = true
+            }
+            playback.props = {
+                node.name        = "@PRE_NODE@"
+                node.description = "UMA-8 Call Mic (Vorverstärkung)"
+                media.class      = Audio/Source/Internal
+                audio.channels   = @MICS@
+                audio.position   = [ @MIC_POSITIONS@ ]
+            }
+        }
+    }
+    { name = libpipewire-module-echo-cancel
+        args = {
+            # Referenz = Monitor der Standardausgabe; WirePlumber folgt einem Wechsel der Standardausgabe.
+            # Jede Wiedergabe dort weckt die ganze Kette mit (gemeinsame node.group), auch ohne Anruf.
+            monitor.mode = true
+            capture.props = {
+                node.name         = "@AEC_CAPTURE_NODE@"
+                node.description  = "UMA-8 Call Mic (Echounterdrückung, Eingang)"
+                node.passive      = true
+                target.object     = "@PRE_NODE@"
+                audio.position    = [ @MIC_POSITIONS@ ]
+                stream.dont-remix = true
+            }
+            source.props = {
+                node.name        = "@AEC_NODE@"
+                node.description = "UMA-8 Call Mic (Echounterdrückung)"
+                media.class      = Audio/Source/Internal
+                audio.position   = [ @MIC_POSITIONS@ ]
+                priority.session = 1
+            }
+            sink.props = {
+                node.name        = "@AEC_REF_NODE@"
+                node.description = "UMA-8 Call Mic (Echo-Referenz)"
+                audio.position   = [ FL FR ]
+            }
+            # WebRTC AEC3, je Mikrofon ein eigenes lineares Filter. Rauschunterdrückung und Pegelregelung aus:
+            # DeepFilterNet und der Begrenzer folgen in der Hauptkette (Standard der Rauschunterdrückung wäre an).
+            aec.args = {
+                webrtc.high_pass_filter  = true
+                webrtc.noise_suppression = false
+                webrtc.gain_control      = false
+            }
+        }
+    }

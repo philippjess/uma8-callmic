@@ -39,9 +39,6 @@ aus haben den Chip wiederholt hängen lassen und sind ausgeschlossen.
 
 ## Nicht im Umfang
 
-- Echounterdrückung: machen die Anruf-Programme (WebRTC, Zoom, Signal …)
-  selbst. Die Verarbeitung ist so ausgelegt, dass sie deren AEC nicht stört
-  (keine schnell schwankende Verstärkung).
 - Adaptive Beamformer (MVDR/GSC mit laufend geschätzter Störkovarianz), andere
   Mikrofone, andere Betriebssysteme. Der superdirektive Beamformer ist ein
   festes MVDR gegen das ideale diffuse Feld, nicht adaptiv.
@@ -50,9 +47,14 @@ aus haben den Chip wiederholt hängen lassen und sind ausgeschlossen.
 ## Architektur
 
 ```
-UMA-8 (Kanal 0–6, 48 kHz)
+UMA-8 (Kanal 0–6, 48 kHz)          ein PipeWire-Prozess (systemd --user: uma8-callmic-chain.service)
    │
-   ▼  PipeWire filter-chain (systemd --user: uma8-callmic-chain.service)
+   ▼  filter-chain „Vorverstärkung“ (nur mit Echounterdrückung)
+   │     7 × builtin linear, +24 dB ─► uma8_callmic_pre (Audio/Source/Internal, 7 Kanäle AUX0–6)
+   ▼  echo-cancel (WebRTC AEC3, monitor.mode)           Referenz: Monitor der Standardausgabe
+   │     7 Kanäle, je ein lineares Filter ─► uma8_callmic_aec (Audio/Source/Internal, 7 Kanäle)
+   │
+   ▼  filter-chain (Hauptkette; ohne Echounterdrückung direkt am UMA-8)
    ├─ uma8_beam (7→2): Beamforming, Hallunterdrückung, Verstärkung
    │     ├─ „Beam Out“ ─► deep_filter_mono (DeepFilterNet) ──────┐
    │     └─ „Raw Out“ (Mittel-Mikrofon, latenzangeglichen) ──────┤
@@ -65,7 +67,8 @@ UMA-8 (Kanal 0–6, 48 kHz)
 Tray-Programm (Python/PySide6)
    ├─ zeigt Zustand, schaltet um (pw-cli set-param, live)
    ├─ Optionen, Kalibrierung, Kanalzuordnung
-   └─ Nachführung: liest die 8 Kanäle parallel mit, setzt „Azimuth“ live
+   └─ Nachführung: liest die 7 Kanäle hinter der Echounterdrückung (ohne sie:
+      die 8 Kanäle des UMA-8) parallel mit, setzt „Azimuth“ live
 ```
 
 Grundsatz: Das Tray-Programm ist nie im Tonweg. Fällt es aus, läuft der Ton
@@ -99,7 +102,7 @@ zeitgleich mit dem DeepFilterNet-Ausgang ankommt). Beide Ausgänge werden mit
 | Ring Order 0–5 | 0–6 | Kanalindex der Ringmikrofone in Kreisreihenfolge |
 | Ring Offset | 0–359,9° | Winkel des ersten Ringmikrofons |
 | Radius | 20–60 mm | Ringradius |
-| Gain | 0–60 dB | Verstärkung beider Ausgänge (Rohsignal ist sehr leise) |
+| Gain | −30–60 dB | Verstärkung beider Ausgänge (Rohsignal ist sehr leise); mit Echounterdrückung „Verstärkung“ − 24 dB, weil die Vorverstärkung davor liegt |
 | Raw Extra Delay | 0–4800 Samples | Zusatzverzögerung für „Raw Out“ = gemessene Latenz von DeepFilterNet |
 | Dereverb | 0/1 | kohärenzbasierte Hallunterdrückung an/aus |
 | Dereverb Strength | 0–1 | Stärke beider Hallstufen (Untergrenze der Dämpfung, Überschätzung) |
@@ -196,8 +199,10 @@ kostet ≈ 0,5 dB Direktschall). Abschalten beider Stufen führt die Verstärkun
 in ≈ 25 ms auf 1 zurück, ohne Klick.
 
 Hinweis zur Echounterdrückung der Anruf-Programme: Beide Stufen ändern die
-Verstärkung je Frequenz schnell, wie DeepFilterNet dahinter auch. Sollte die
-AEC eines Programms schlechter werden, zuerst „Hallunterdrückung“ abschalten.
+Verstärkung je Frequenz schnell, wie DeepFilterNet dahinter auch. Eine AEC
+dahinter (im Anruf-Programm) kann diesen zeitvarianten Echoweg kaum lernen;
+deshalb sitzt die eigene Echounterdrückung (Komponente 3) davor, auf den
+Rohkanälen.
 
 **Auswertung** (`tools/eval_dereverb.py`, Raumsimulation `tools/roomsim.py`):
 Spiegelquellenmethode, Quaderraum 4 × 3,5 × 2,6 m, frequenzunabhängige
@@ -265,8 +270,10 @@ Pegelregelung, damit die AEC der Anruf-Programme nicht gestört wird.
 - Eigener Prozess: `pipewire -c uma8-callmic.conf` als
   `systemd --user`-Dienst `uma8-callmic-chain.service` (Restart=on-failure).
 - Capture-Seite: `target.object` = Raw-Quelle des UMA-8, 8 Kanäle,
-  Kanal 7 wird nicht verwendet. `node.passive = true`, damit das Gerät nur
-  läuft, wenn jemand das virtuelle Mikrofon nutzt oder das Tray mithört.
+  Kanal 7 wird nicht verwendet; mit Echounterdrückung stattdessen
+  `uma8_callmic_aec`, 7 Kanäle `AUX0–6` (Komponente 3). `node.passive = true`,
+  damit das Gerät nur läuft, wenn jemand das virtuelle Mikrofon nutzt oder das
+  Tray mithört.
 - Playback-Seite: `media.class = Audio/Source`, `node.name = uma8_callmic`,
   `node.description = "UMA-8 Call Mic"`, mono, 48 kHz,
   `priority.session` höher als alle anderen Quellen, damit WirePlumber sie
@@ -284,9 +291,99 @@ Pegelregelung, damit die AEC der Anruf-Programme nicht gestört wird.
 - Parameteränderungen zur Laufzeit: `pw-cli set-param <node> Props
   '{ params = [ "<plugin>:<control>" <wert> ] }'` auf dem Capture-Knoten
   der Kette. Alle Controls einschließlich Geometrie sind live änderbar;
-  ein Neustart des Dienstes ist nur nach einer Neuinstallation nötig.
+  ein Neustart des Dienstes ist nur nach einer Neuinstallation oder beim
+  Umschalten der Echounterdrückung nötig.
 
-### 3. Tray-Programm (Python 3, PySide6, numpy)
+### 3. Echounterdrückung (PipeWire `echo-cancel`)
+
+Ziel: Was aus den Lautsprechern ins Mikrofon gelangt, soll das Gegenüber nicht
+hören. Ohne eigene AEC hörte sich das Gegenüber selbst, und dessen
+Anruf-Programm schaltete bei Gegensprechen das eigene Mikrofon stumm: Der
+Echoweg durch Beam, Hallunterdrückung und DeepFilterNet ist nichtlinear und
+zeitvariant, die AEC des Programms lernt ihn nicht und unterdrückt hart.
+
+Aufbau, alles im selben PipeWire-Prozess, nur mit `echo_cancel = true`
+(Standard), sonst ist die Kette genau die bisherige:
+
+- **Vorverstärkung** (filter-chain): liest das UMA-8 wie sonst die Hauptkette
+  (8 Kanäle, Gerätepositionen, `stream.dont-remix`, passiv), verwirft Kanal 7
+  und verstärkt die 7 Mikrofone um 24 dB. builtin `linear` klemmt „Mult“ still
+  auf ±10 (+20 dB), deshalb zwei gleiche Stufen (×3,98) je Kanal. Ausgang
+  `uma8_callmic_pre`, `Audio/Source/Internal`, `AUX0–6`.
+- **echo-cancel** mit `monitor.mode = true`: Referenz ist der Monitor der
+  Standardausgabe (Stereo), WirePlumber folgt deren Wechsel. Eingang
+  `uma8_callmic_pre` (passiv), Ausgang `uma8_callmic_aec`
+  (`Audio/Source/Internal`, 7 Kanäle). WebRTC AEC3 rechnet je Kanal ein
+  eigenes lineares Filter; die nichtlineare Nachunterdrückung ist für alle
+  Kanäle gleich, die Phasenbeziehungen für Beam und Nachführung bleiben also
+  erhalten. `aec.args`: `webrtc.noise_suppression = false` (Standard wäre an;
+  DeepFilterNet folgt), `webrtc.gain_control = false`,
+  `webrtc.high_pass_filter = true`. Mit WebRTC 2.x gibt es sonst nur noch
+  `webrtc.mobile_mode` (aus). Das Modul fordert 10-ms-Blöcke an
+  (`node.latency` 480/48000) und puffert bei anderer Quantengröße selbst;
+  ≈ 9 ms zusätzliche Latenz.
+- **Hauptkette** liest `uma8_callmic_aec` mit 7 Kanälen; „Gain (dB)“ von
+  `uma8_beam` = „Verstärkung“ − 24 dB. Die Einstellung „Verstärkung“ bleibt
+  die Gesamtverstärkung (0–60 dB).
+
+`Audio/Source/Internal`: pipewire-pulse zeigt solche Knoten nicht (also auch
+nicht die KDE-Lautstärkeregelung), WirePlumber macht sie nie zum Standard,
+per `target.object` sind sie verbindbar und schlafen normal.
+`Audio/Source/Virtual` ließ PipeWire 1.6.9 bei Stream-Knoten abstürzen; der
+Referenz-Stream darf keine eigene `node.group` bekommen (dann arbeitet die AEC
+nicht).
+
+Warum +24 dB: Offline mit der PipeWire-Konfiguration der AEC3 nachgerechnet
+(synthetischer Raum, Rohpegel mit −75 dBFS Grundrauschen): ohne Verstärkung
+ERLE 19 statt 25 dB und Sprache des Nutzers bei Gegensprechen um 14 statt
+4,4 dB gedämpft; +30 dB war nicht besser und kostet Aussteuerungsreserve.
+7 Kanäle waren nie schlechter als einer.
+
+Messung im echten PipeWire-Graphen (ohne Hardware: 8-kanalige Ersatzquelle,
+Referenz über eine eigene Senke, Echo = Referenz über einen Raumpfad mit
+Reflexionen und diffusem Nachhall T60 0,3 s, Rohpegel Echo −45 dBFS, Nutzer
+−50 dBFS, Rauschen −75 dBFS):
+
+| Messung | Ergebnis |
+|---|---|
+| Vorverstärkung | +24,00 dB |
+| nur Gegenseite, erste 4 s | Echo 29 dB leiser |
+| nur Gegenseite, eingeschwungen | −20 dBFS → −67 dBFS (47 dB, unter dem Grundrauschen) |
+| nur Nutzer | −0,3 dB |
+| Gegensprechen, Nutzeranteil | −19 dB (ohne diffusen Nachhall −9 dB; Echo 5 dB leiser als Nutzer: −8 dB) |
+| Gesamtverstärkung Roh-Weg | +29,7 dB (ohne AEC +30,0 dB) |
+| Rechenzeit AEC-Knoten | ≈ 0,31 ms je 5,3-ms-Zyklus (≈ 6 % eines Kerns) |
+
+Bei Gegensprechen dämpft die AEC3-Nachunterdrückung den Nutzer also deutlich,
+je lauter das Lautsprecher-Echo am Array und je länger der Nachhall. Die
+Abhilfe dafür liegt außerhalb der Kette: Lautsprecher leiser oder weiter weg.
+
+Aussteuerung: Die AEC begrenzt ihren Ausgang hart auf ±1 (0 dBFS, live mit
+einem Sinus geprüft: Vorstufe 1,98, AEC-Ausgang 1,00). Rohspitzen über
+−24 dBFS werden also abgeschnitten, und abgeschnittenes Echo kann die AEC
+nicht mehr linear entfernen. Mit der Standardverstärkung von 30 dB setzt der
+Begrenzer am Ende schon ab −31 dBFS Rohspitze ein; betroffen sind nur sehr
+laute Quellen nah am Array (Lautsprecher daneben, Klopfen auf den Tisch).
+
+Bekannte Nachteile:
+
+- Jede Wiedergabe auf der Standardausgabe weckt die ganze Kette samt UMA-8,
+  auch ohne Anruf: Der Referenz-Stream ist passiv mit dem Monitor verbunden,
+  und PipeWire plant über die `node.group` des Moduls die ganze AEC mit
+  (live gesehen: alle Knoten „running“, ohne Aufnahme). Abhilfe wäre eine
+  dynamisch verbundene Referenz (WirePlumber-Skript); nicht umgesetzt.
+- Nur Ton auf der Standardausgabe wird entfernt. Gibt das Anruf-Programm auf
+  einem anderen Gerät aus, bleibt dessen Echo.
+- Die eigene AEC der Anruf-Programme darf an bleiben; sie findet kaum noch
+  Echo.
+
+Umschalten (Optionen → „Echounterdrückung (Lautsprecher)“) ändert den Aufbau:
+Das Tray schreibt die Konfiguration und startet den Dienst neu
+(`systemctl --user try-restart --no-block`, kurze Tonpause, Hinweis im Tray).
+Fehlt `uma8_callmic_aec`, obwohl die Kette läuft (etwa alte Konfiguration),
+wird das Tray rot: „Echounterdrückung nicht geladen“.
+
+### 4. Tray-Programm (Python 3, PySide6, numpy)
 
 Module:
 
@@ -297,10 +394,10 @@ Module:
 | `params.py` | Abbildung Einstellungen → Plugin-Controls (für Konfiguration und Live-Änderungen) |
 | `constants.py` | Pfade, Knotennamen, gemessene Latenzen |
 | `pwctl.py` | PipeWire-Anbindung über `pw-dump`/`pw-cli`/`systemctl --user`: Zustand lesen, Parameter setzen, Dienst steuern |
-| `capture.py` | 8-Kanal-Aufnahme über einen `pw-record`-Unterprozess (float32, 48 kHz), Ringpuffer |
+| `capture.py` | Mehrkanal-Aufnahme über einen `pw-record`-Unterprozess (float32, 48 kHz), Ringpuffer. Immer mit den Kanalpositionen der Quelle (`--channel-map`): pw-record nähme sonst 7.1 bzw. 7.0, und PipeWire mischte um (gemessen: FLC/FRC landeten in FL/FR, Kanal 6/7 blieben stumm; an der AEC-Quelle kamen nur AUX0/1 an). Ohne Ausweichen aufs Standardmikrofon (`node.dont-fallback`): fehlt die Quelle, endet die Aufnahme |
 | `doa.py` | Richtungsschätzung: SRP-PHAT über 72 Azimuth- × 4 Elevationswerte, Sprachaktivitätserkennung (Energie + spektrale Flachheit) |
 | `geometry.py` | Kanalzuordnung und Radius aus Raumrauschen: Kohärenzmatrix, Mittel-Mikrofon = höchste mittlere Kohärenz, Ringreihenfolge und Radius per Fit an sinc(k·d) |
-| `tracker.py` | Nachführung: alle 0,2 s DOA bei Sprache, Median über 1 s, Hysterese 15°, setzt Azimuth |
+| `tracker.py` | Nachführung: alle 0,2 s DOA bei Sprache, Median über 1 s, Hysterese 15°, setzt Azimuth. Hört mit Echounterdrückung auf `uma8_callmic_aec` (7 Kanäle): Sprache aus den Lautsprechern ist dort entfernt, der Strahl folgt nie dem Lautsprecher (im Test erkannte die Sprachaktivität Lautsprecher-Sprache vor der AEC in 39 von 43 Blöcken, dahinter in 3). Kalibrierung und Kanalzuordnung lesen weiter das UMA-8 direkt. Endet die Aufnahme (Kette neu gestartet), verbindet das Tray neu |
 | `chainconf.py` | erzeugt `uma8-callmic.conf` aus Vorlage und Einstellungen |
 | `tray.py` | Icon, Menü, Umschalten, Zustandsabfrage alle 2 s |
 | `dialogs.py` | Optionen, Kalibrierung, Kanalzuordnung |
@@ -311,7 +408,7 @@ Tray-Zustände:
 |---|---|
 | farbig | aktiv (Beam-Weg) |
 | grau | deaktiviert (Roh-Weg) |
-| rot | Problem: Gerät fehlt, falsche Firmware, Dienst läuft nicht, DeepFilterNet fehlt; Details im Tooltip |
+| rot | Problem: Gerät fehlt, falsche Firmware, Dienst läuft nicht, DeepFilterNet fehlt, Echounterdrückung nicht geladen; Details im Tooltip |
 
 Linksklick = umschalten. Rechtsklick-Menü: ☑ Aktiv · Kalibrieren… ·
 Optionen… · Beenden (nur Tray; Dienst läuft weiter).
@@ -326,6 +423,8 @@ Optionen:
   (Standard an, mit Nachhallzeit des Raums), Stärke für beide
 - Rauschunterdrückung: 0–100 dB, Standard 30 dB
 - Verstärkung: dB-Regler mit Pegelanzeige
+- Echounterdrückung (Lautsprecher), Standard an; Umschalten startet die Kette
+  neu
 - Beim Login starten
 
 Kalibrierung: Countdown, 5 s normal sprechen mit Pegelanzeige, SRP-PHAT über
@@ -341,7 +440,7 @@ Zuordnung vor; über die Optionen jederzeit wiederholbar. Drehung und Spiegelung
 sind unerheblich, weil Kalibrierung und Nachführung im selben Bezugssystem
 arbeiten.
 
-### 4. Installation
+### 5. Installation
 
 `install.sh` (ohne root):
 
@@ -365,6 +464,7 @@ arbeiten.
 | DeepFilterNet fehlt | Dienst startet nicht, Tray rot mit Hinweis |
 | Dienst abgestürzt | systemd startet neu; Tray zeigt rot, bis er wieder läuft |
 | Nachführung ohne Audio | Azimuth bleibt stehen, Hinweis im Tooltip |
+| Echounterdrückung an, aber nicht in der laufenden Kette | Tray rot: „Echounterdrückung nicht geladen (Dienst … neu starten)“ |
 | Kaputte config.toml | Standardwerte, Hinweis im Tray; vor dem nächsten Speichern wird die kaputte Datei als `config.toml.broken` gesichert |
 | `pw-cli` schlägt fehl | Fehler im Tooltip und im Log (`~/.local/state/uma8-callmic/log`) |
 
@@ -404,7 +504,10 @@ Python (pytest):
 - `geometry.py`: synthetisches diffuses Rauschen mit permutierten Kanälen,
   Mittelkanal und Ringnachbarschaft korrekt erkannt
 - `config.py`, `chainconf.py`: Round-Trip, Validierung, erzeugte Konfiguration
-  startet in einem Probelauf (`pipewire -c <datei>`, 2 s) ohne Fehler
+  startet in einem Probelauf (`pipewire -c <datei>`, 2 s) ohne Fehler; beide
+  Kettenvarianten werden geparst (SPA-JSON) und geprüft: Knotennamen,
+  Klassen, Kanalzahlen und -positionen, `aec.args`, Gesamtverstärkung jeder
+  Vorverstärkungsstrecke, `null`-Eingang nur ohne Echounterdrückung
 
 Integration (manuell ausgelöst, braucht das Gerät):
 

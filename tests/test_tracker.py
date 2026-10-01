@@ -1,7 +1,9 @@
 import numpy as np
 
 from uma8_callmic.doa import DoaResult
-from uma8_callmic.tracker import Tracker
+import time
+
+from uma8_callmic.tracker import Tracker, TrackerThread
 
 
 class FakeEstimator:
@@ -44,3 +46,39 @@ def test_low_confidence_is_ignored():
 def test_wraparound_mean():
     applied, _, _ = run([DoaResult(a, 20, 0.3, 0.5) for a in (170, 190, 180)], initial=0.0)
     assert abs(applied[0] - 180) < 1e-6
+
+
+def test_thread_ignores_dead_capture():
+    """Endet die Aufnahme (Quelle weg), wird der letzte Puffer nicht immer wieder ausgewertet."""
+    class DeadCapture:
+        alive = False
+
+        def latest(self, frames):
+            raise AssertionError("darf nicht gelesen werden")
+
+    fed = []
+
+    class Recorder:
+        def feed(self, block):
+            fed.append(block)
+
+    th = TrackerThread(DeadCapture(), Recorder(), interval=0.01)
+    th.start()
+    time.sleep(0.1)
+    th.stop()
+    th.join(1)
+    assert fed == []
+
+
+def test_tracker_works_with_seven_channels():
+    """Die AEC-Quelle liefert nur die 7 Mikrofone (ohne Kanal 7)."""
+    class Echo:
+        def estimate(self, block):
+            assert block.shape[1] == 7
+            return DoaResult(90, 20, 0.3, 0.5)
+
+    applied = []
+    t = Tracker(Echo(), AlwaysSpeech(), applied.append, center=6)
+    for _ in range(3):
+        t.feed(np.zeros((9600, 7)))
+    assert applied == [90.0]

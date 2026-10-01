@@ -48,6 +48,8 @@ class TrackerThread(threading.Thread):
 
     def run(self) -> None:
         while not self._stop_event.wait(self.interval):
+            if not self.capture.alive:  # Quelle weg: den letzten Puffer nicht immer wieder auswerten
+                continue
             block = self.capture.latest(self.block_frames)
             if block is None:
                 continue

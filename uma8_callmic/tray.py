@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QIcon
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 from . import chainconf, pwctl
 from . import constants as K
 from .array import ArrayGeometry
-from .capture import Capture
+from .capture import Capture, open_capture
 from .config import load, save
 from .dialogs import CalibrationDialog, GeometryDialog, OptionsDialog
 from .doa import SrpPhat, VoiceDetector
@@ -68,7 +69,7 @@ class TrayApp:
     # --- Zustand ---------------------------------------------------------------
 
     def refresh(self) -> None:
-        st = pwctl.status()
+        st = pwctl.status(self.cfg.echo_cancel)
         try:
             node = pwctl.find_node(pwctl.dump(), K.CAPTURE_NODE) if st.chain else None
         except Exception:  # pw-dump hängt/fehlt: Zustand beim nächsten Durchlauf erneut prüfen
@@ -79,6 +80,9 @@ class TrayApp:
             self.apply_all()  # Kette (neu) gestartet: Live-Werte an Einstellungen angleichen
         elif node is None:
             self.chain_node = None
+        if self.tracker_capture is not None and not self.tracker_capture.alive and not st.problem:
+            # Aufnahme endet, wenn ihre Quelle verschwindet (Kette neu gestartet, Gerät ab): neu verbinden
+            self.update_tracking(restart=True)
         self.tray.setIcon(self.icons[icon_state(st, self.cfg.active)])
         self.tray.setToolTip(tooltip(st, self.cfg, self.tracked, self.warnings))
 
@@ -115,15 +119,29 @@ class TrayApp:
         self.refresh()
 
     def apply_options(self, updates: dict) -> None:
-        autostart_before = self.cfg.autostart
+        autostart_before, echo_before = self.cfg.autostart, self.cfg.echo_cancel
         for key, value in updates.items():
             setattr(self.cfg, key, value)
         self.save_config()
-        self.apply_all()
+        echo_changed = self.cfg.echo_cancel != echo_before
+        if echo_changed:
+            self.restart_chain()  # andere Kettenstruktur; die neue Kette startet mit den gespeicherten Werten
+        else:
+            self.apply_all()
         if self.cfg.autostart != autostart_before:
             self.set_autostart(self.cfg.autostart)
-        self.update_tracking()
+        self.update_tracking(restart=echo_changed)  # Nachführung hört mit Echounterdrückung auf deren Ausgang
         self.refresh()
+
+    def restart_chain(self) -> None:
+        state = "eingeschaltet" if self.cfg.echo_cancel else "ausgeschaltet"
+        try:
+            pwctl.restart_chain()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log.warning("Neustart der Kette fehlgeschlagen: %s", e)
+            return
+        self.tray.showMessage("UMA-8 Call Mic", f"Echounterdrückung {state}. Die Filterkette startet neu "
+                              "(kurze Tonpause).")
 
     def set_autostart(self, enabled: bool) -> None:
         """Autostart-Datei angleichen: legt sie auch an, wenn sie fehlt (RPM ohne install.sh)."""
@@ -174,16 +192,20 @@ class TrayApp:
         self.tracked = azimuth
         self._set(steering_params(self.cfg, azimuth))
 
-    def update_tracking(self) -> None:
+    def update_tracking(self, restart: bool = False) -> None:
         want = self.cfg.direction_mode == "tracking"
+        if self.tracker_thread is not None and (restart or not want):
+            last = self.tracked
+            self._stop_tracking()
+            if want:
+                self.tracked = last  # Neu verbinden: der Strahl bleibt, wo er war
         if want and self.tracker_thread is None:
-            self.tracker_capture = Capture(pwctl.raw_source(), 8, seconds=3.0)
+            self.tracker_capture = open_capture(pwctl.tracking_target(self.cfg.echo_cancel), seconds=3.0)
+            start = self.cfg.calibrated_azimuth if self.tracked is None else self.tracked
             tracker = Tracker(SrpPhat(self.cfg.geometry().positions()), VoiceDetector(), self._apply_tracked,
-                              initial_azimuth=self.cfg.calibrated_azimuth, center=self.cfg.center_channel)
+                              initial_azimuth=start, center=self.cfg.center_channel)
             self.tracker_thread = TrackerThread(self.tracker_capture, tracker)
             self.tracker_thread.start()
-        elif not want and self.tracker_thread is not None:
-            self._stop_tracking()
 
     def _stop_tracking(self) -> None:
         if self.tracker_thread:

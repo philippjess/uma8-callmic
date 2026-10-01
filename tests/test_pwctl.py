@@ -66,6 +66,8 @@ def test_status_problem_priority():
     assert Status("missing", True, True, True).problem.startswith("UMA-8 nicht")
     assert Status("raw", False, False, True).problem.startswith("Dienst")
     assert Status("raw", True, False, True).problem.startswith("Filterkette")
+    assert Status("raw", True, False, True, aec=False).problem.startswith("Filterkette")
+    assert Status("raw", True, True, True, aec=False).problem.startswith("Echounterdrückung nicht geladen")
     assert Status("raw", True, True, True).problem is None
 
 
@@ -143,3 +145,29 @@ def test_sync_autostart(tmp_path, monkeypatch):
     assert pwctl.sync_autostart(False, path) is True
     assert not path.exists()
     assert pwctl.sync_autostart(False, path) is False
+
+
+def test_status_checks_aec_only_when_enabled(monkeypatch):
+    aec = {"id": 79, "type": "PipeWire:Interface:Node", "info": {"props": {"node.name": "uma8_callmic_aec"}}}
+    monkeypatch.setattr(pwctl, "service_active", lambda: True)
+    monkeypatch.setattr(pwctl, "dump", lambda: OBJS)
+    assert pwctl.status(echo_cancel=False).aec is True
+    st = pwctl.status(echo_cancel=True)
+    assert st.chain and not st.aec
+    monkeypatch.setattr(pwctl, "dump", lambda: OBJS + [aec])
+    assert pwctl.status(echo_cancel=True).aec is True
+
+
+def test_tracking_follows_echo_cancel(monkeypatch):
+    """Mit Echounterdrückung hört die Nachführung auf deren Ausgang (7 Mikrofone), sonst auf das Gerät (8 Kanäle)."""
+    monkeypatch.setattr(pwctl, "raw_source", lambda: "raw.9")
+    assert pwctl.tracking_target(True) == ("uma8_callmic_aec", 7, tuple(f"AUX{i}" for i in range(7)))
+    assert pwctl.tracking_target(False) == ("raw.9", 8, ("FL", "FR", "FC", "LFE", "RL", "RR", "FLC", "FRC"))
+    assert pwctl.raw_target() == pwctl.tracking_target(False)
+
+
+def test_restart_chain_only_restarts_running_service(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pwctl, "_run", lambda args, timeout=5.0: calls.append(args))
+    pwctl.restart_chain()
+    assert calls == [["systemctl", "--user", "try-restart", "--no-block", pwctl.K.SERVICE]]

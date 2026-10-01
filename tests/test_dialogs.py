@@ -26,6 +26,9 @@ def test_options_dialog_reports_changes(app):
     assert not dlg.manual.isEnabled()
     dlg.direction.setCurrentIndex(1)
     assert dlg.manual.isEnabled()
+    assert changes[-1]["echo_cancel"] is True
+    dlg.echo.setChecked(False)
+    assert changes[-1]["echo_cancel"] is False
     dlg.close()
 
 

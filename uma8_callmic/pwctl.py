@@ -57,6 +57,21 @@ def raw_source() -> str:
         return K.RAW_DEVICE
 
 
+#: pw-record-Ziel: Knotenname, Kanalzahl, Kanalpositionen der Quelle
+Target = tuple[str, int, tuple[str, ...]]
+
+
+def raw_target() -> Target:
+    """Raw-Quelle mit denselben Kanalpositionen wie in der Kette (Kalibrierung, Kanalzuordnung)."""
+    return raw_source(), len(K.RAW_POSITIONS), K.RAW_POSITIONS
+
+
+def tracking_target(echo_cancel: bool) -> Target:
+    """Quelle der Nachführung. Mit Echounterdrückung deren Ausgang: Sprache aus den Lautsprechern ist dort
+    entfernt, der Strahl folgt also nie dem Lautsprecher. Ohne sie die Raw-Quelle."""
+    return (K.AEC_NODE, K.MICS, K.MIC_POSITIONS) if echo_cancel else raw_target()
+
+
 def device_state(objs: list[dict]) -> str:
     """'raw', 'dsp' oder 'missing' anhand der USB-Produkt-ID des miniDSP-Geräts."""
     for o in objs:
@@ -85,6 +100,11 @@ def fade_mix(node_id: int, active: bool, steps: int = 10) -> None:
     for i in range(1, steps + 1):
         a = i / steps if active else 1.0 - i / steps
         set_params(node_id, {"mix:Gain 1": a, "mix:Gain 2": 1.0 - a})
+
+
+def restart_chain() -> None:
+    """Kette mit der neu geschriebenen Konfiguration neu starten, nur wenn sie läuft; wartet nicht darauf."""
+    _run(["systemctl", "--user", "try-restart", "--no-block", K.SERVICE])
 
 
 def service_active() -> bool:
@@ -151,6 +171,8 @@ class Status:
     chain: bool
     dfn: bool
     beam: bool = True
+    #: Echounterdrückung geladen oder nicht eingeschaltet
+    aec: bool = True
 
     @property
     def problem(self) -> str | None:
@@ -167,10 +189,12 @@ class Status:
             return "Dienst uma8-callmic-chain läuft nicht"
         if not self.chain:
             return "Filterkette nicht geladen"
+        if not self.aec:
+            return "Echounterdrückung nicht geladen (Dienst uma8-callmic-chain neu starten)"
         return None
 
 
-def status() -> Status:
+def status(echo_cancel: bool = False) -> Status:
     try:
         objs = dump()
     except (RuntimeError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
@@ -180,4 +204,5 @@ def status() -> Status:
     except (OSError, subprocess.TimeoutExpired):
         running = False
     return Status(device_state(objs), running, find_node(objs, K.CAPTURE_NODE) is not None,
-                  K.dfn_plugin().exists(), K.beam_plugin().exists())
+                  K.dfn_plugin().exists(), K.beam_plugin().exists(),
+                  not echo_cancel or find_node(objs, K.AEC_NODE) is not None)

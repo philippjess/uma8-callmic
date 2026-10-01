@@ -11,11 +11,11 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 from . import constants as K
 from .array import ArrayGeometry
 from .calibration import evaluate
-from .capture import Capture
+from .capture import Capture, open_capture
 from .config import Config
 from .doa import SrpPhat, VoiceDetector
 from .geometry import check as check_geometry
-from .pwctl import raw_source
+from .pwctl import raw_target
 
 DIRECTIONS = [("Kalibriert", "calibrated"), ("Manuell", "manual"),
               ("Automatisch nachführen", "tracking"), ("Alle Richtungen", "omni")]
@@ -100,6 +100,11 @@ class OptionsDialog(QDialog):
         form.addRow("Verstärkung", _with_label(self.gain, self.gain_label))
         self.meter = LevelMeter()
         form.addRow("Pegel (Ausgang)", self.meter)
+        self.echo = QCheckBox("Echounterdrückung (Lautsprecher)")
+        self.echo.setToolTip("Entfernt den Ton der Standardausgabe aus dem Mikrofon, damit das Gegenüber sich nicht "
+                             "selbst hört. Umschalten startet die Filterkette neu (kurze Tonpause).")
+        self.echo.setChecked(cfg.echo_cancel)
+        form.addRow("", self.echo)
         self.autostart = QCheckBox("Beim Login starten")
         self.autostart.setChecked(cfg.autostart)
         form.addRow("", self.autostart)
@@ -114,7 +119,7 @@ class OptionsDialog(QDialog):
         for signal in (self.direction.currentIndexChanged, self.manual.valueChanged,
                        self.beamformer.currentIndexChanged, self.dereverb.toggled, self.late.toggled,
                        self.strength.valueChanged, self.t60.valueChanged, self.noise.valueChanged,
-                       self.gain.valueChanged, self.autostart.toggled):
+                       self.gain.valueChanged, self.echo.toggled, self.autostart.toggled):
             signal.connect(self._changed)
         self._update_enabled()
         self.capture = None
@@ -142,6 +147,7 @@ class OptionsDialog(QDialog):
             "dereverb_t60": round(self.t60.value(), 2),
             "noise_reduction_db": float(self.noise.value()),
             "gain_db": float(self.gain.value()),
+            "echo_cancel": self.echo.isChecked(),
             "autostart": self.autostart.isChecked(),
         }
         self.manual_label.setText(f"{updates['manual_azimuth']:.0f}°")
@@ -200,7 +206,7 @@ class _RecordingDialog(QDialog):
         self.ticks = 0
         self.accept_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
-        self.capture = Capture(raw_source(), 8, seconds=seconds)
+        self.capture = open_capture(raw_target(), seconds)
         self.timer.start(200)
 
     def _finish(self) -> None:

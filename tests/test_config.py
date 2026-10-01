@@ -10,7 +10,7 @@ def test_roundtrip(tmp_path):
     path = tmp_path / "config.toml"
     cfg = Config(active=False, direction_mode="tracking", calibrated=True, calibrated_azimuth=215.0,
                  gain_db=36.0, ring=[2, 3, 4, 5, 6, 1], dereverb=False, late_reverb=False,
-                 beamformer="delay_and_sum")
+                 beamformer="delay_and_sum", echo_cancel=False)
     save(cfg, path)
     res = load(path)
     assert res.config == cfg and res.warnings == []
@@ -19,14 +19,15 @@ def test_roundtrip(tmp_path):
 def test_invalid_values_fall_back_with_warning(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text('gain_db = 500.0\ndirection_mode = "sideways"\nactive = "ja"\nmanual_azimuth = 12\n'
-                    'beamformer = "omni"\n')
+                    'beamformer = "omni"\necho_cancel = 1\n')
     res = load(path)
     assert res.config.gain_db == Config().gain_db
     assert res.config.direction_mode == "calibrated"
     assert res.config.active is True
     assert res.config.manual_azimuth == 12.0
     assert res.config.beamformer == "superdirective"
-    assert len(res.warnings) == 4
+    assert res.config.echo_cancel is True
+    assert len(res.warnings) == 5
 
 
 def test_old_dereverb_switch_gives_new_defaults(tmp_path):
@@ -57,3 +58,13 @@ def test_broken_file_is_backed_up_on_save(tmp_path):
     save(res.config, path, broken=True)
     assert (tmp_path / "config.toml.broken").read_text() == "das ist [kein toml"
     assert load(path).config == Config()
+
+
+def test_echo_cancel_defaults_on_for_old_files(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("gain_db = 36.0\n")
+    res = load(path)
+    assert res.config.echo_cancel is True and res.config.gain_db == 36.0 and res.warnings == []
+    save(Config(echo_cancel=False), path)
+    assert "echo_cancel = false\n" in path.read_text()
+    assert load(path).config.echo_cancel is False

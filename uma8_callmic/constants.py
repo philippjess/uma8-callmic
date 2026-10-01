@@ -4,9 +4,21 @@ from pathlib import Path
 
 SAMPLE_RATE = 48000
 RAW_DEVICE = "alsa_input.usb-miniDSP_micArray_RAW_SPK-00.analog-surround-71"
+#: Kanalpositionen der Raw-Quelle; Kanal 0–6 = Mikrofone, Kanal 7 = freier PDM-Eingang
+RAW_POSITIONS = ("FL", "FR", "FC", "LFE", "RL", "RR", "FLC", "FRC")
+MICS = 7
+#: Kanalpositionen der 7 Mikrofonkanäle hinter der Vorverstärkung (Echounterdrückung, Hauptkette)
+MIC_POSITIONS = tuple(f"AUX{i}" for i in range(MICS))
 CAPTURE_NODE = "uma8_callmic_capture"
 SOURCE_NODE = "uma8_callmic"
+#: Interne Quellen der Echounterdrückung (Audio/Source/Internal: für Programme unsichtbar, nie Standard)
+PRE_NODE = "uma8_callmic_pre"
+AEC_NODE = "uma8_callmic_aec"
 SERVICE = "uma8-callmic-chain.service"
+#: Vorverstärkung vor der Echounterdrückung. Offline mit der PipeWire-AEC3-Konfiguration gemessen (synthetischer
+#: Raum, Rohpegel ≈ −75 dBFS Grundrauschen): ohne Verstärkung ERLE 19 statt 25 dB und Sprache des Nutzers bei
+#: Gegensprechen um 14 statt 4,4 dB gedämpft; +30 dB war nicht besser und kostet Aussteuerungsreserve.
+AEC_PRE_GAIN_DB = 24.0
 
 CONFIG_FILE = Path.home() / ".config/uma8-callmic/config.toml"
 CHAIN_CONF = Path.home() / ".config/pipewire/uma8-callmic.conf"

@@ -54,6 +54,24 @@ def test_ports(plugin_so):
     p.close()
 
 
+def test_gain_can_attenuate(plugin_so):
+    """Mit Echounterdrückung liegen 24 dB schon vor dem Plugin, „Gain (dB)“ wird dann auch negativ."""
+    p = Plugin(plugin_so, "uma8_beam")
+    h = p.d.port_range_hints[PORTS.index("Gain (dB)")]
+    assert (h.lower, h.upper) == (-30.0, 60.0)
+    p.close()
+    x = np.random.default_rng(3).standard_normal((48000, 7)).astype(np.float32) * 0.01
+    level = {}
+    for gain in (0.0, -24.0, -40.0):
+        p = make(plugin_so, mode=OMNI)
+        p.set("Gain (dB)", gain)
+        y = p.process(channels(x))["Raw Out"][24000:]
+        p.close()
+        level[gain] = 10 * np.log10(np.mean(np.square(y, dtype=np.float64)))
+    assert abs(level[0.0] - level[-24.0] - 24.0) < 0.05
+    assert abs(level[0.0] - level[-40.0] - 30.0) < 0.05  # unter −30 dB wird geklemmt
+
+
 def test_latency_constant_matches_plugin():
     assert BEAM_LATENCY == 1024  # FFT-Länge der STFT im Plugin
 

@@ -1,6 +1,6 @@
 """Einstellungen → Controls der Filterkette („<knoten>:<control>“)."""
 from .config import Config
-from .constants import DFN_LATENCY
+from .constants import AEC_PRE_GAIN_DB, DFN_LATENCY
 
 #: Control „Mode“ von uma8_beam; 1 = alle Richtungen (nur Mittel-Mikrofon)
 BEAM_MODES = {"superdirective": 0.0, "delay_and_sum": 2.0}
@@ -33,9 +33,14 @@ def steering_params(cfg: Config, tracked_azimuth: float | None = None) -> dict[s
             "beam:Elevation (deg)": float(cfg.calibrated_elevation)}
 
 
+def beam_gain_db(cfg: Config) -> float:
+    """„Gain (dB)“ von uma8_beam: Gesamtverstärkung abzüglich der Vorverstärkung vor der Echounterdrückung."""
+    return float(cfg.gain_db) - (AEC_PRE_GAIN_DB if cfg.echo_cancel else 0.0)
+
+
 def processing_params(cfg: Config) -> dict[str, float]:
     return {
-        "beam:Gain (dB)": float(cfg.gain_db),
+        "beam:Gain (dB)": beam_gain_db(cfg),
         "beam:Dereverb": 1.0 if cfg.dereverb else 0.0,
         "beam:Dereverb Strength": float(cfg.dereverb_strength),
         "beam:Dereverb T60 (s)": float(cfg.dereverb_t60),

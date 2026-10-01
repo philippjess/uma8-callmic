@@ -19,3 +19,9 @@ def test_tooltip_texts():
     assert "nicht angeschlossen" in tooltip(Status("missing", True, True, True), cfg)
     assert "Hinweis: kaputt" in tooltip(OK, cfg, warnings=["kaputt"])
     assert "noch nicht kalibriert" in tooltip(OK, Config())
+
+
+def test_tooltip_reports_missing_echo_cancel():
+    st = Status("raw", True, True, True, aec=False)
+    assert icon_state(st, True) == "error"
+    assert "Echounterdrückung nicht geladen" in tooltip(st, Config())

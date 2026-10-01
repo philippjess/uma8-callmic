@@ -30,8 +30,11 @@ class Config:
     late_reverb: bool = True
     dereverb_t60: float = 0.5
     noise_reduction_db: float = 30.0
+    #: Gesamtverstärkung; mit Echounterdrückung liegt AEC_PRE_GAIN_DB davon vor der AEC, der Rest im Plugin
     gain_db: float = 30.0
     ceiling_db: float = -1.0
+    #: Echounterdrückung (Referenz: Standardausgabe). Umschalten ändert den Aufbau der Kette → Dienst-Neustart
+    echo_cancel: bool = True
     autostart: bool = True
     geometry_checked: bool = False
     center_channel: int = 0

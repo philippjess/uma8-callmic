@@ -1,8 +1,8 @@
 # uma8-callmic
 
 Macht aus dem miniDSP UMA-8 (Raw-Firmware) ein gutes Telefonie-Mikrofon unter Linux:
-Beamforming über 7 Mikrofone, optionale Hallunterdrückung, DeepFilterNet-Rauschunterdrückung,
-volle Bandbreite. Bedienung über ein KDE-Tray-Icon.
+Echounterdrückung, Beamforming über 7 Mikrofone, optionale Hallunterdrückung,
+DeepFilterNet-Rauschunterdrückung, volle Bandbreite. Bedienung über ein KDE-Tray-Icon.
 
 ## Voraussetzungen
 
@@ -60,12 +60,35 @@ Kalibrierung (Rechtsklick → Kalibrieren…).
 - Rechtsklick: Aktiv, Kalibrieren…, Optionen…, Beenden
 - Icon grün = aktiv, grau = deaktiviert, rot = Problem (Tooltip zeigt die Ursache)
 
+## Echounterdrückung
+
+Entfernt aus allen 7 Mikrofonen, was die Lautsprecher abspielen, bevor Beamforming und Rauschunterdrückung
+laufen. Das Gegenüber hört sich nicht mehr selbst, und sein Anruf-Programm schaltet bei Gegensprechen nicht
+mehr das eigene Mikrofon stumm. Als Referenz dient die jeweilige Standardausgabe (PipeWire-Modul `echo-cancel`,
+WebRTC AEC3); ein Wechsel der Standardausgabe wird übernommen.
+
+- Die Echounterdrückung der Anruf-Programme kann an bleiben.
+- Nur Ton auf der Standardausgabe wird entfernt. Gibt das Anruf-Programm auf einem anderen Gerät aus, bleibt
+  dessen Echo.
+- Spricht man gleichzeitig mit dem Gegenüber, wird die eigene Stimme leiser, umso mehr, je lauter die
+  Lautsprecher am Mikrofon ankommen. Lautsprecher leiser oder weiter weg hilft.
+- Nachteil: Jede Wiedergabe auf der Standardausgabe (Musik, Video) weckt die ganze Kette samt UMA-8, auch
+  ohne Anruf, und kostet dann Rechenzeit.
+- „Verstärkung“ bleibt die Gesamtverstärkung; 24 dB davon liegen vor der Echounterdrückung.
+- Ausschalten: Optionen → „Echounterdrückung (Lautsprecher)“. Das startet die Filterkette neu (kurze
+  Tonpause). Ohne Tray: `echo_cancel = false` in `~/.config/uma8-callmic/config.toml`, dann
+  `systemctl --user restart uma8-callmic-chain`.
+
 ## Aufbau
 
 ```
-UMA-8 (7 Mikros) ─► uma8_beam (Beamforming, Hall) ─► DeepFilterNet ─┐
-                    └─ Roh-Weg (Mittel-Mikrofon, latenzangeglichen) ─┴► Umschalter ─► Begrenzer ─► „UMA-8 Call Mic“
+UMA-8 (7 Mikros) ─► +24 dB ─► Echounterdrückung (Referenz: Standardausgabe)
+   ─► uma8_beam (Beamforming, Hall) ─► DeepFilterNet ─┐
+      └─ Roh-Weg (Mittel-Mikrofon, latenzangeglichen) ─┴► Umschalter ─► Begrenzer ─► „UMA-8 Call Mic“
 ```
+
+Ohne Echounterdrückung liest `uma8_beam` das UMA-8 direkt und verstärkt allein. Die Zwischenstufen
+(`uma8_callmic_pre`, `uma8_callmic_aec`) sind interne Quellen und tauchen in keiner Geräteliste auf.
 
 Die Tonverarbeitung läuft als PipeWire-Filterkette im Dienst `uma8-callmic-chain` (Rust-LADSPA-Plugin in
 `plugin/`). Vor jedem Start schreibt der Dienst die Kettenkonfiguration aus den Einstellungen

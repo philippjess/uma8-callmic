@@ -12,6 +12,9 @@ const MAX_RAW_EXTRA: usize = 4800;
 /// Bereich von „Min WNG (dB)“; die Mitte (−3 dB) ist der Standard. Delay-and-Sum hat +8,5 dB.
 const MIN_WNG_LO: f32 = -12.0;
 const MIN_WNG_HI: f32 = 6.0;
+/// Bereich von „Gain (dB)“: negativ, wenn die Echounterdrückung davor schon verstärkt (Vorverstärkung +24 dB)
+const GAIN_LO: f32 = -30.0;
+const GAIN_HI: f32 = 60.0;
 
 // Port-Indizes uma8_beam (Reihenfolge ist API: neue Controls nur hinten anfügen)
 const IN0: usize = 0;
@@ -68,7 +71,7 @@ impl Plugin for BeamPlugin {
         PortSpec::control("Ring 5", 0.0, 6.0, HINT_INTEGER | HINT_DEFAULT_0),
         PortSpec::control("Ring Offset (deg)", 0.0, 360.0, HINT_DEFAULT_0),
         PortSpec::control("Radius (mm)", 20.0, 60.0, HINT_DEFAULT_MIDDLE),
-        PortSpec::control("Gain (dB)", 0.0, 60.0, HINT_DEFAULT_0),
+        PortSpec::control("Gain (dB)", GAIN_LO, GAIN_HI, HINT_DEFAULT_0),
         PortSpec::control("Dereverb", 0.0, 1.0, HINT_TOGGLED | HINT_DEFAULT_1),
         PortSpec::control("Dereverb Strength", 0.0, 1.0, HINT_DEFAULT_MIDDLE),
         PortSpec::control("Dereverb T60 (s)", 0.1, 1.5, HINT_DEFAULT_MIDDLE),
@@ -118,7 +121,7 @@ impl Plugin for BeamPlugin {
             t60: ports.control(DR_T60, 0.5),
         };
         self.pipeline.set_params(&params);
-        let gain_target = 10f32.powf(ports.control(GAIN, 0.0).clamp(0.0, 60.0) / 20.0);
+        let gain_target = 10f32.powf(ports.control(GAIN, 0.0).clamp(GAIN_LO, GAIN_HI) / 20.0);
         let raw_extra = (ports.control(RAW_EXTRA, 0.0).round().max(0.0) as usize).min(MAX_RAW_EXTRA);
         let raw_total = stft::LATENCY + raw_extra;
         let dlen = self.raw_delay.len();

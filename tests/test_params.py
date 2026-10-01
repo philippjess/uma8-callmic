@@ -1,6 +1,7 @@
 from uma8_callmic.config import Config
-from uma8_callmic.constants import DFN_LATENCY
-from uma8_callmic.params import MIN_WNG_DB, all_params, mix_params, processing_params, steering_params
+from uma8_callmic.constants import AEC_PRE_GAIN_DB, DFN_LATENCY
+from uma8_callmic.params import (MIN_WNG_DB, all_params, beam_gain_db, mix_params, processing_params,
+                                 steering_params)
 
 
 def test_all_params_cover_every_node():
@@ -11,7 +12,7 @@ def test_all_params_cover_every_node():
     assert p["beam:Raw Extra Delay (samples)"] == float(DFN_LATENCY)
     assert p["dfn:Attenuation Limit (dB)"] == 30.0
     assert p["limit:Ceiling (dB)"] == -1.0
-    assert p["beam:Gain (dB)"] == 30.0
+    assert p["beam:Gain (dB)"] == 30.0 - AEC_PRE_GAIN_DB == 6.0
     assert {k.split(":")[0] for k in p} == {"beam", "dfn", "mix", "limit"}
 
 
@@ -47,3 +48,13 @@ def test_dereverb_params():
 def test_mix_params():
     assert mix_params(True) == {"mix:Gain 1": 1.0, "mix:Gain 2": 0.0}
     assert mix_params(False) == {"mix:Gain 1": 0.0, "mix:Gain 2": 1.0}
+
+
+def test_gain_is_split_around_echo_cancel():
+    """„Verstärkung“ bleibt die Gesamtverstärkung; mit Echounterdrückung liegen 24 dB vor der AEC."""
+    assert AEC_PRE_GAIN_DB == 24.0
+    for gain in (0.0, 30.0, 60.0):
+        assert beam_gain_db(Config(gain_db=gain, echo_cancel=True)) == gain - 24.0
+        assert beam_gain_db(Config(gain_db=gain, echo_cancel=False)) == gain
+    assert processing_params(Config(gain_db=42.0, echo_cancel=False))["beam:Gain (dB)"] == 42.0
+    assert -30.0 <= beam_gain_db(Config(gain_db=0.0)) and beam_gain_db(Config(gain_db=60.0)) <= 60.0  # Port-Bereich

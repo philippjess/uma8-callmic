@@ -67,6 +67,7 @@ def main() -> None:
 
     res = load(args.config)
     cfg: Config = res.config
+    cfg.echo_cancel = False  # keine AEC-Stufe offline: die ganze Verstärkung liegt im Plugin
     for w in res.warnings:
         print(f"Hinweis: {w}", file=sys.stderr)
     if args.azimuth is not None:

@@ -11,14 +11,14 @@ from . import constants as K
 
 
 def _check_geometry_cli() -> int:
-    from .capture import Capture
+    from .capture import open_capture
     from .config import load
     from .geometry import check
-    from .pwctl import raw_source
+    from .pwctl import raw_target
 
     cfg = load(K.CONFIG_FILE).config
     print("Bitte 10 Sekunden still sein …", flush=True)
-    cap = Capture(raw_source(), 8, seconds=12.0)
+    cap = open_capture(raw_target(), 12.0)
     try:
         time.sleep(10.5)
         block = cap.latest(10 * K.SAMPLE_RATE)
