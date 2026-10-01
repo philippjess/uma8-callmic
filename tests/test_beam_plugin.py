@@ -176,11 +176,16 @@ def test_silence_and_full_scale(plugin_so):
 
 
 def test_cpu_budget(plugin_so):
+    """10 s Audio mit beiden Hallstufen. Entwicklungsrechner ≈ 0,11 s; die Grenze 0,25 s (2,5 % eines
+    Kerns) lässt langsameren oder ausgelasteten Bauhosts (rpmbuild %check) Luft, fängt aber echte
+    Fehler wie einen Neuentwurf je Frame (Sekunden) sicher. Bester von drei Läufen gegen Ausreißer."""
     x = np.random.default_rng(1).standard_normal((480000, 7)) * 0.01
     ins = channels(x)
-    p = make(plugin_so, dereverb=1.0, late=1.0)
-    start = time.perf_counter()
-    p.process(ins)
-    elapsed = time.perf_counter() - start
-    p.close()
-    assert elapsed < 0.2, f"10 s Audio brauchten {elapsed:.3f} s"
+    runs = []
+    for _ in range(3):
+        p = make(plugin_so, dereverb=1.0, late=1.0)
+        start = time.perf_counter()
+        p.process(ins)
+        runs.append(time.perf_counter() - start)
+        p.close()
+    assert min(runs) < 0.25, f"10 s Audio brauchten {', '.join(f'{t:.3f}' for t in runs)} s"

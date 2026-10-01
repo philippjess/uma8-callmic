@@ -201,16 +201,40 @@ mod tests {
     }
 
     #[test]
-    fn non_finite_input_is_contained() {
-        let len = 8000;
-        let mut x = vec![vec![0.01f32; len]; CHANNELS];
-        x[3][100] = f32::NAN;
-        x[4][200] = f32::INFINITY;
-        x[5][300] = 3e38;
-        let mut p = params(Mode::Superdirective, 0.0, 0.0);
-        (p.dereverb, p.late_reverb) = (true, true);
-        let mut y = vec![0.0; len];
-        run(&mut Pipeline::new(SR, &p), &x, 0, len, &mut y);
-        assert!(y.iter().all(|v| v.is_finite()));
+    fn non_finite_and_huge_input_recover() {
+        // Unkorreliertes Rauschen 0,01 je Mikrofon; einzelne Störwerte (NaN, ∞, 3·10³⁸, 10²⁰)
+        // dürfen nichts dauerhaft verstellen: 1 s danach muss die Ausgabe der ungestörten gleichen.
+        let len = 96000;
+        let mut seed = 77u32;
+        let x: Vec<Vec<f32>> = (0..CHANNELS)
+            .map(|_| {
+                (0..len)
+                    .map(|_| {
+                        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                        0.02 * ((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5)
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut bad = x.clone();
+        bad[3][100] = f32::NAN;
+        bad[4][200] = f32::INFINITY;
+        bad[5][300] = 3e38;
+        bad[0][4000] = 1e20;
+        bad[2][4000] = -1e20;
+        for mode in [Mode::Superdirective, Mode::Omni, Mode::DelayAndSum] {
+            for (dereverb, late) in [(true, true), (true, false), (false, true)] {
+                let mut p = params(mode, 0.0, 0.0);
+                (p.dereverb, p.late_reverb) = (dereverb, late);
+                let (mut clean, mut y) = (vec![0.0; len], vec![0.0; len]);
+                run(&mut Pipeline::new(SR, &p), &x, 0, len, &mut clean);
+                run(&mut Pipeline::new(SR, &p), &bad, 0, len, &mut y);
+                assert!(y.iter().all(|v| v.is_finite()), "{mode:?} {dereverb} {late}");
+                let tail = 4000 + LATENCY + 48000..len;
+                let peak = clean[tail.clone()].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+                let err = tail.map(|n| (y[n] - clean[n]).abs()).fold(0.0, f32::max);
+                assert!(err <= 1e-4 * peak, "{mode:?} {dereverb} {late}: Abweichung {err} (Spitze {peak})");
+            }
+        }
     }
 }

@@ -62,7 +62,9 @@ impl LateReverb {
         let floor = 10f32.powf(-self.strength * MAX_ATTENUATION_DB / 20.0);
         for k in 0..BINS {
             let psd = PSD_SMOOTH * self.psd[k] + (1.0 - PSD_SMOOTH) * y[k].norm_sqr();
-            self.psd[k] = if psd < EPS { 0.0 } else { psd };
+            // Denormals und (nach der Eingangsbegrenzung eigentlich unmöglich) ∞/NaN verwerfen,
+            // sonst bliebe die Verstärkung für immer an der Untergrenze.
+            self.psd[k] = if psd >= EPS && psd.is_finite() { psd } else { 0.0 };
             let late = decay * self.psd_hist[old][k];
             let target = if self.enabled { (1.0 - late / (self.psd[k] + EPS)).max(0.0).sqrt().max(floor) } else { 1.0 };
             self.gain[k] = GAIN_SMOOTH * self.gain[k] + (1.0 - GAIN_SMOOTH) * target;
@@ -170,5 +172,25 @@ mod tests {
         let (b0, b1) = ((0.1 * SR) as usize, burst);
         let direct_db = 10.0 * (energy(&wet[b0..b1]) / aligned(b0, b1)).log10();
         assert!(direct_db <= 3.0, "Direktschall um {direct_db} dB gedämpft");
+    }
+
+    #[test]
+    fn non_finite_spectrum_does_not_latch() {
+        let y: Vec<C32> = (0..BINS).map(|k| C32::new(0.1 + (k % 7) as f32 * 0.01, 0.0)).collect();
+        let mut bad = y.clone();
+        bad[10] = C32::new(f32::INFINITY, 0.0);
+        bad[20] = C32::new(f32::NAN, 0.0);
+        bad[30] = C32::new(1e30, 0.0);
+        let (mut d, mut fresh) = (LateReverb::new(SR), LateReverb::new(SR));
+        d.set_params(true, 0.6, 0.5);
+        fresh.set_params(true, 0.6, 0.5);
+        d.gains(&bad);
+        for _ in 0..100 {
+            d.gains(&y);
+            fresh.gains(&y);
+        }
+        for k in 0..BINS {
+            assert!((d.gain[k] - fresh.gain[k]).abs() < 1e-4, "k={k}: {} statt {}", d.gain[k], fresh.gain[k]);
+        }
     }
 }

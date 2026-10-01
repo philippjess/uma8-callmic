@@ -10,6 +10,11 @@ pub const HOP: usize = 256;
 pub const BINS: usize = FFT_LEN / 2 + 1;
 /// Latenz in Samples, unabhängig von allen Einstellungen.
 pub const LATENCY: usize = FFT_LEN;
+/// Eingangswerte werden auf ±MAX_INPUT begrenzt. Audio ist ±1, mit der Vorverstärkung der
+/// Echounterdrückung (+24 dB) ±16; der Rest ist Datenmüll. So bleiben alle Leistungen der Stufen
+/// (|X|² ≤ (FFT_LEN·MAX_INPUT)² ≈ 10¹², Produkte zweier Kanäle ≈ 10²⁶) weit unter f32::MAX, und
+/// kein Schätzer kann auf ∞ hängen bleiben.
+pub const MAX_INPUT: f32 = 1e3;
 
 pub type C32 = Complex<f32>;
 
@@ -54,11 +59,12 @@ impl Stft {
         }
     }
 
-    /// Nimmt ein Sample je Kanal auf (nicht endliche Werte werden 0); true, wenn ein Frame fällig ist.
+    /// Nimmt ein Sample je Kanal auf (nicht endliche Werte werden 0, der Rest auf ±`MAX_INPUT`
+    /// begrenzt); true, wenn ein Frame fällig ist.
     pub fn push(&mut self, sample: impl Fn(usize) -> f32) -> bool {
         for (c, ring) in self.input.iter_mut().enumerate() {
             let x = sample(c);
-            ring[self.in_pos] = if x.is_finite() { x } else { 0.0 };
+            ring[self.in_pos] = if x.is_finite() { x.clamp(-MAX_INPUT, MAX_INPUT) } else { 0.0 };
         }
         self.in_pos = (self.in_pos + 1) % FFT_LEN;
         self.hop_count += 1;
@@ -129,6 +135,22 @@ mod tests {
         }
         for n in LATENCY..x.len() {
             assert!((y[n] - x[n - LATENCY]).abs() < 1e-5, "n={n}");
+        }
+    }
+
+    #[test]
+    fn invalid_input_is_zeroed_or_clamped() {
+        let mut s = Stft::new(4);
+        let bad = [f32::NAN, f32::INFINITY, 1e20, -3e38];
+        for n in 0..FFT_LEN {
+            s.push(|c| if n == FFT_LEN / 2 { bad[c] } else { 0.0 });
+        }
+        s.analyze();
+        // Fenstermitte = 1: |X| = Betrag des einzigen Samples
+        for (c, expect) in [0.0, 0.0, MAX_INPUT, MAX_INPUT].into_iter().enumerate() {
+            for x in &s.spectra[c] {
+                assert!((x.norm() - expect).abs() <= 1e-3 * MAX_INPUT, "Kanal {c}: {x}");
+            }
         }
     }
 }
