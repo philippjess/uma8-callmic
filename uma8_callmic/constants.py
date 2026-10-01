@@ -46,11 +46,13 @@ def find_plugin(so_name: str, env_var: str) -> Path:
 
     Eine gesetzte Umgebungsvariable gilt immer, auch wenn die Datei fehlt – ein Tippfehler zeigt sich
     dann als fehlendes Plugin statt still auf ein anderes auszuweichen. Sonst gilt der erste vorhandene
-    Ort aus LADSPA_DIRS; ist das Plugin nirgends installiert, der RPM-Ort (das Tray meldet das Fehlen)."""
+    Ort aus LADSPA_DIRS; ist das Plugin nirgends installiert, der Systemort der Distribution (das Tray meldet
+    das Fehlen). Orte unter einem Symlink-Verzeichnis zählen nicht (Arch: /usr/lib64 → lib), sonst stünde dort
+    /usr/lib64/ladspa statt /usr/lib/ladspa in der Konfiguration."""
     override = os.environ.get(env_var)
     if override:
         return Path(override).expanduser()
-    candidates = [d / so_name for d in LADSPA_DIRS]
+    candidates = [d / so_name for d in LADSPA_DIRS if not d.parent.is_symlink()]
     return next((p for p in candidates if p.exists()), candidates[1])
 
 

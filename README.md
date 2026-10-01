@@ -6,7 +6,7 @@ DeepFilterNet-Rauschunterdrückung, volle Bandbreite. Bedienung über ein KDE-Tr
 
 ## Voraussetzungen
 
-- Linux mit PipeWire und WirePlumber (getestet: Fedora 44 KDE; Arch über `install.sh`)
+- Linux mit PipeWire und WirePlumber (getestet: Fedora 44 KDE; Arch-Pakete im Container gebaut und geprüft)
 - UMA-8 mit **Raw-Firmware** (`micArray_vf_raw_v1.3_up.bin`, USB-ID `2752:001d`). Firmware nur mit dem
   offiziellen miniDSP-Tool wechseln (Windows-VM: siehe `firmware/docker-compose.usb.yml`).
 
@@ -34,6 +34,22 @@ Der Bau lädt den DeepFilterNet-Quelltext (Prüfsumme in `packaging/deepfilterne
 Rust-Crates herunter, `rpmbuild` selbst läuft danach offline. Ergebnisse, Logs und rpmlint-Ausgabe:
 `packaging/out/`.
 
+## Installation (Arch Linux, Paket)
+
+Zwei Pakete, gebaut aus dem Checkout: `deepfilternet-ladspa` (DeepFilterNet 0.5.6 mit dem Thread-Leck-Patch) und `uma8-callmic`.
+
+    ./packaging/build-arch.sh            # baut beide in einem Podman-Container (archlinux:latest)
+    sudo pacman -U packaging/out/arch/*.pkg.tar.zst
+
+Direkt auf dem Arch-Rechner geht es auch, im jeweiligen Verzeichnis (zuerst das Plugin):
+
+    cd packaging/arch/deepfilternet-ladspa && makepkg -si
+    cd ../uma8-callmic && makepkg -si
+
+`deepfilternet-ladspa` ersetzt das AUR-Paket `deepfilternet-plugin-pipewire-bin` (provides/conflicts/replaces): pacman tauscht es beim Installieren aus. Das AUR-Paket liefert zwar `libdeep_filter_ladspa` und erfüllt damit die Abhängigkeit von `uma8-callmic`, behält aber das Thread-Leck. Abhängigkeiten kommen aus den offiziellen Repos: `pipewire`, `pipewire-audio` (pw-record, WebRTC-AEC), `libpipewire` (echo-cancel), `libpulse` (pactl), `pyside6`, `python-numpy`.
+
+Erster Start: Das Paket aktiviert nichts von selbst. Beim ersten Start des Tray-Programms (`uma8-callmic` oder Startmenü-Eintrag) richtet es Benutzerdienst und Autostart ein. Der Dienst `uma8-callmic-chain.service` ist ein systemd-Benutzerdienst (`systemctl --user status uma8-callmic-chain`); er schreibt vor dem Start die PipeWire-Konfiguration neu (`uma8-callmic --write-config`).
+
 ## Entwickler-Installation (ohne RPM)
 
 Läuft direkt aus dem Repo, nur für den eigenen Benutzer, und verweigert sich, solange das RPM installiert ist.
@@ -41,14 +57,16 @@ Braucht Rust, PySide6, numpy und ein DeepFilterNet-Plugin:
 
 - Fedora: `sudo dnf install cargo python3-pyside6 python3-numpy pipewire-utils pulseaudio-utils`, dazu
   `./packaging/build-rpms.sh deepfilternet-ladspa` und `sudo dnf install packaging/out/deepfilternet-ladspa-*.x86_64.rpm`
-- Arch: `sudo pacman -S rust pyside6 python-numpy` und `yay -S deepfilternet-plugin-pipewire-bin`
+- Arch: `sudo pacman -S rust pyside6 python-numpy` und ein DeepFilterNet-Plugin (Paket oben oder
+  `yay -S deepfilternet-plugin-pipewire-bin`)
 
 ```sh
 ./install.sh
 uma8-callmic &
 ```
 
-Die Plugins werden in dieser Reihenfolge gesucht: `~/.local/lib/ladspa`, `/usr/lib64/ladspa`, `/usr/lib/ladspa`;
+Die Plugins werden in dieser Reihenfolge gesucht: `~/.local/lib/ladspa`, `/usr/lib64/ladspa` (außer es ist
+nur ein Symlink, wie auf Arch), `/usr/lib/ladspa`;
 `UMA8_BEAM_PLUGIN` bzw. `UMA8_DFN_PLUGIN` erzwingen einen bestimmten Pfad.
 
 Beim ersten Start prüft das Programm die Kanalzuordnung (10 s still sein) und bittet danach um eine

@@ -177,6 +177,18 @@ def test_plugin_search_order(ladspa_dirs):
     assert K.dfn_plugin() == local / K.DFN_SO
 
 
+def test_plugin_dir_under_symlink_is_skipped(tmp_path, monkeypatch):
+    """Arch: /usr/lib64 ist ein Symlink auf lib – gemeint ist /usr/lib/ladspa, auch ohne installiertes Plugin."""
+    (tmp_path / "lib" / "ladspa").mkdir(parents=True)
+    (tmp_path / "lib64").symlink_to("lib")
+    local, lib64, lib = tmp_path / "local", tmp_path / "lib64" / "ladspa", tmp_path / "lib" / "ladspa"
+    monkeypatch.setattr(K, "LADSPA_DIRS", (local, lib64, lib))
+    monkeypatch.delenv("UMA8_DFN_PLUGIN", raising=False)
+    assert K.dfn_plugin() == lib / K.DFN_SO
+    (lib / K.DFN_SO).touch()
+    assert K.dfn_plugin() == lib / K.DFN_SO
+
+
 def test_plugin_env_override_wins(ladspa_dirs, monkeypatch, tmp_path):
     (ladspa_dirs[0] / K.BEAM_SO).touch()
     monkeypatch.setenv("UMA8_BEAM_PLUGIN", str(tmp_path / "eigenes.so"))
