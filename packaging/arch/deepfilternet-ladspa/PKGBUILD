@@ -1,0 +1,55 @@
+# Maintainer: Philipp <philipp@rootshell.dev>
+# DeepFilterNet-LADSPA-Plugin aus dem Quelltext, mit denselben zwei Patches wie das RPM (packaging/*.patch, eine
+# Quelle der Wahrheit: sie liegen im Repo und werden von hier aus per Pfad angewendet). Der Tarball-Hash steht
+# ebenfalls in packaging/deepfilternet-ladspa.sources. Gedacht für `cd packaging/arch/deepfilternet-ladspa && makepkg -si`.
+pkgname=deepfilternet-ladspa
+pkgver=0.5.6
+pkgrel=1
+pkgdesc='DeepFilterNet-Rauschunterdrückung als LADSPA-Plugin (mit behobenem Thread-Leck)'
+arch=(x86_64 aarch64)
+url='https://github.com/Rikorose/DeepFilterNet'
+# DeepFilterNet selbst: MIT OR Apache-2.0; dazu statisch gelinkte Crates (LICENSE.dependencies) und jemalloc (BSD-2-Clause)
+license=('MIT' 'Apache-2.0' 'BSD-2-Clause' '0BSD' 'Zlib' 'Unlicense')
+depends=(glibc gcc-libs)
+makedepends=(rust git make gcc)
+# Das AUR-Paket deepfilternet-plugin-pipewire-bin liefert dieselbe Datei (und provides=libdeep_filter_ladspa)
+provides=(libdeep_filter_ladspa deepfilternet-plugin-pipewire-bin)
+conflicts=(libdeep_filter_ladspa deepfilternet-plugin-pipewire-bin)
+replaces=(deepfilternet-plugin-pipewire-bin)
+options=(!lto !debug)
+source=("DeepFilterNet-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('0f9a219d06c404bc4200f228e7e224f108cbbca04d7227a6de7d2ce974c2f579')
+
+_pkgdir="$startdir/../.."   # packaging/
+
+prepare() {
+  cd "DeepFilterNet-$pkgver"
+  # time 0.3.28 baut mit aktuellem Rust nicht (E0282): Lockfile auf 0.3.36; Thread-Leck: Stop-Flag + join
+  patch -Np1 --fuzz=0 -i "$_pkgdir/deepfilternet-0.5.6-time-0.3.36.patch"
+  patch -Np1 --fuzz=0 -i "$_pkgdir/deepfilternet-0.5.6-ladspa-worker-thread.patch"
+  export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+  cd "DeepFilterNet-$pkgver"
+  cargo build --frozen --release -p deep-filter-ladspa
+  # Lizenzen der ins Plugin gelinkten Crates (wie im RPM, nur dieses Workspace-Mitglied)
+  cargo tree --frozen -p deep-filter-ladspa --edges no-build,no-dev,no-proc-macro \
+      --target "$(rustc -vV | sed -n 's/^host: //p')" --prefix none --format '{l}: {p}' \
+      | sed 's/ (.*)$//' | sort -u > LICENSE.dependencies
+}
+
+check() {
+  cd "DeepFilterNet-$pkgver"
+  # u. a. der Thread-Leck-Test aus dem Patch: Instanzen anlegen und aufräumen lässt keine Threads zurück
+  cargo test --frozen --release -p deep-filter-ladspa
+}
+
+package() {
+  cd "DeepFilterNet-$pkgver"
+  install -Dm755 target/release/libdeep_filter_ladspa.so "$pkgdir/usr/lib/ladspa/libdeep_filter_ladspa.so"
+  install -Dm644 LICENSE LICENSE-MIT LICENSE-APACHE LICENSE.dependencies -t "$pkgdir/usr/share/licenses/$pkgname"
+  install -Dm644 ladspa/README.md -t "$pkgdir/usr/share/doc/$pkgname"
+  install -Dm644 ladspa/filter-chain-configs/* -t "$pkgdir/usr/share/doc/$pkgname/filter-chain-configs"
+}
