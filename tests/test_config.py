@@ -9,7 +9,8 @@ def test_missing_file_gives_defaults(tmp_path):
 def test_roundtrip(tmp_path):
     path = tmp_path / "config.toml"
     cfg = Config(active=False, direction_mode="tracking", calibrated=True, calibrated_azimuth=215.0,
-                 gain_db=36.0, ring=[2, 3, 4, 5, 6, 1], dereverb=True)
+                 gain_db=36.0, ring=[2, 3, 4, 5, 6, 1], dereverb=False, late_reverb=False,
+                 beamformer="delay_and_sum")
     save(cfg, path)
     res = load(path)
     assert res.config == cfg and res.warnings == []
@@ -17,13 +18,27 @@ def test_roundtrip(tmp_path):
 
 def test_invalid_values_fall_back_with_warning(tmp_path):
     path = tmp_path / "config.toml"
-    path.write_text('gain_db = 500.0\ndirection_mode = "sideways"\nactive = "ja"\nmanual_azimuth = 12\n')
+    path.write_text('gain_db = 500.0\ndirection_mode = "sideways"\nactive = "ja"\nmanual_azimuth = 12\n'
+                    'beamformer = "omni"\n')
     res = load(path)
     assert res.config.gain_db == Config().gain_db
     assert res.config.direction_mode == "calibrated"
     assert res.config.active is True
     assert res.config.manual_azimuth == 12.0
-    assert len(res.warnings) == 3
+    assert res.config.beamformer == "superdirective"
+    assert len(res.warnings) == 4
+
+
+def test_old_dereverb_switch_gives_new_defaults(tmp_path):
+    """Vor der Kohärenz-Hallunterdrückung schaltete „dereverb“ das T60-Modell (jetzt „late_reverb“)."""
+    path = tmp_path / "config.toml"
+    path.write_text("dereverb = false\ndereverb_strength = 0.8\n")
+    res = load(path)
+    assert res.config.dereverb is True and res.config.late_reverb is True
+    assert res.config.dereverb_strength == 0.8 and res.warnings == []
+    path.write_text("dereverb = false\nlate_reverb = false\n")
+    res = load(path)
+    assert res.config.dereverb is False and res.config.late_reverb is False
 
 
 def test_invalid_ring_resets_geometry(tmp_path):

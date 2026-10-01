@@ -9,6 +9,8 @@ from pathlib import Path
 from .array import ArrayGeometry
 
 DIRECTION_MODES = ("calibrated", "manual", "tracking", "omni")
+#: superdirektiv (Standard) oder Delay-and-Sum zum Vergleich; „alle Richtungen“ ist eine Richtungsart
+BEAMFORMERS = ("superdirective", "delay_and_sum")
 DEFAULT_RING = [1, 6, 5, 4, 3, 2]
 
 
@@ -20,8 +22,12 @@ class Config:
     calibrated_azimuth: float = 0.0
     calibrated_elevation: float = 20.0
     manual_azimuth: float = 0.0
-    dereverb: bool = False
+    beamformer: str = "superdirective"
+    #: Kohärenzbasierte Hallunterdrückung
+    dereverb: bool = True
     dereverb_strength: float = 0.6
+    #: Zusätzlich späten Nachhall über das Abklingmodell dämpfen (nutzt dereverb_t60)
+    late_reverb: bool = True
     dereverb_t60: float = 0.5
     noise_reduction_db: float = 30.0
     gain_db: float = 30.0
@@ -42,6 +48,9 @@ _RANGES = {
     "dereverb_strength": (0.0, 1.0), "dereverb_t60": (0.1, 1.5), "noise_reduction_db": (0.0, 100.0),
     "gain_db": (0.0, 60.0), "ceiling_db": (-12.0, 0.0), "ring_offset_deg": (0.0, 360.0), "radius_mm": (20.0, 60.0),
 }
+
+
+_CHOICES = {"direction_mode": DIRECTION_MODES, "beamformer": BEAMFORMERS}
 
 
 @dataclass
@@ -67,7 +76,7 @@ def _check(name: str, value, default):
     if isinstance(default, int):
         return value if _is_int(value) and 0 <= value <= 6 else None
     if isinstance(default, str):
-        return value if value in DIRECTION_MODES else None
+        return value if value in _CHOICES[name] else None
     if isinstance(default, list):
         ok = isinstance(value, list) and len(value) == 6 and all(_is_int(v) for v in value)
         return list(value) if ok else None
@@ -81,6 +90,10 @@ def load(path: Path) -> LoadResult:
         raw = tomllib.loads(path.read_text())
     except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
         return LoadResult(Config(), [f"Einstellungen unlesbar, Standardwerte aktiv: {e}"], broken=True)
+    if "dereverb" in raw and "late_reverb" not in raw:
+        # Datei von vor der Kohärenz-Hallunterdrückung: „dereverb“ schaltete das T60-Modell, das jetzt
+        # „late_reverb“ heißt. Der alte Wert war meist nur der Standard (aus); es gelten die neuen Standards.
+        raw = {k: v for k, v in raw.items() if k != "dereverb"}
     cfg, warnings = Config(), []
     for f in fields(Config):
         if f.name not in raw:

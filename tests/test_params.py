@@ -1,6 +1,6 @@
 from uma8_callmic.config import Config
 from uma8_callmic.constants import DFN_LATENCY
-from uma8_callmic.params import all_params, mix_params, steering_params
+from uma8_callmic.params import MIN_WNG_DB, all_params, mix_params, processing_params, steering_params
 
 
 def test_all_params_cover_every_node():
@@ -25,6 +25,23 @@ def test_steering_modes():
     assert steering_params(cfg, tracked_azimuth=370.0)["beam:Azimuth (deg)"] == 10.0
     cfg.direction_mode = "omni"
     assert steering_params(cfg)["beam:Mode"] == 1.0
+
+
+def test_beamformer_choice_sets_mode():
+    cfg = Config()
+    assert steering_params(cfg)["beam:Mode"] == 0.0
+    cfg.beamformer = "delay_and_sum"
+    assert steering_params(cfg)["beam:Mode"] == 2.0
+    cfg.direction_mode = "omni"
+    assert steering_params(cfg)["beam:Mode"] == 1.0
+
+
+def test_dereverb_params():
+    p = processing_params(Config())
+    assert p["beam:Dereverb"] == 1.0 and p["beam:Late Reverb"] == 1.0
+    assert p["beam:Min WNG (dB)"] == MIN_WNG_DB == -3.0
+    p = processing_params(Config(dereverb=False, late_reverb=False, dereverb_t60=0.8))
+    assert p["beam:Dereverb"] == 0.0 and p["beam:Late Reverb"] == 0.0 and p["beam:Dereverb T60 (s)"] == 0.8
 
 
 def test_mix_params():

@@ -29,6 +29,21 @@ def test_options_dialog_reports_changes(app):
     dlg.close()
 
 
+def test_options_dialog_dereverb_controls(app):
+    changes = []
+    dlg = OptionsDialog(Config(), changes.append, lambda: None, meter=False)
+    assert dlg.t60.isEnabled() and dlg.strength.isEnabled() and dlg.beamformer.isEnabled()
+    dlg.late.setChecked(False)
+    assert changes[-1]["late_reverb"] is False and not dlg.t60.isEnabled() and dlg.strength.isEnabled()
+    dlg.dereverb.setChecked(False)
+    assert changes[-1]["dereverb"] is False and not dlg.strength.isEnabled()
+    dlg.beamformer.setCurrentIndex(1)
+    assert changes[-1]["beamformer"] == "delay_and_sum"
+    dlg.direction.setCurrentIndex(3)
+    assert not dlg.beamformer.isEnabled()
+    dlg.close()
+
+
 def test_other_dialogs_construct(app):
     CalibrationDialog(UMA8, lambda az, el: None).close()
     GeometryDialog(UMA8, lambda ran, adopt: None).close()

@@ -1,15 +1,19 @@
 //! Die LADSPA-Plugins der Bibliothek.
 
-use crate::beam::{Beamformer, Geometry, Steering, CHANNELS};
-use crate::dereverb::{self, Dereverb};
+use crate::beam::{Geometry, Mode, Steering, CHANNELS};
 use crate::ladspa::*;
 use crate::limiter::Limiter;
+use crate::pipeline::{Params, Pipeline};
+use crate::stft;
 use std::ffi::c_ulong;
 
 const CHUNK: usize = 1024;
 const MAX_RAW_EXTRA: usize = 4800;
+/// Bereich von „Min WNG (dB)“; die Mitte (−3 dB) ist der Standard. Delay-and-Sum hat +8,5 dB.
+const MIN_WNG_LO: f32 = -12.0;
+const MIN_WNG_HI: f32 = 6.0;
 
-// Port-Indizes uma8_beam
+// Port-Indizes uma8_beam (Reihenfolge ist API: neue Controls nur hinten anfügen)
 const IN0: usize = 0;
 const BEAM_OUT: usize = 7;
 const RAW_OUT: usize = 8;
@@ -25,14 +29,14 @@ const DEREVERB: usize = 22;
 const DR_STRENGTH: usize = 23;
 const DR_T60: usize = 24;
 const RAW_EXTRA: usize = 25;
+const LATE_REVERB: usize = 26;
+const MIN_WNG: usize = 27;
 
 pub struct BeamPlugin {
-    beam: Beamformer,
-    dereverb: Dereverb,
+    pipeline: Pipeline,
     input: [Vec<f32>; CHANNELS],
-    beam_buf: Vec<f32>,
-    raw_buf: Vec<f32>,
     out_buf: Vec<f32>,
+    raw_buf: Vec<f32>,
     raw_delay: Vec<f32>,
     raw_pos: usize,
     gain: f32,
@@ -54,7 +58,7 @@ impl Plugin for BeamPlugin {
         PortSpec::audio_out("Raw Out"),
         PortSpec::control("Azimuth (deg)", 0.0, 360.0, HINT_DEFAULT_0),
         PortSpec::control("Elevation (deg)", 0.0, 90.0, HINT_DEFAULT_0),
-        PortSpec::control("Mode", 0.0, 1.0, HINT_INTEGER | HINT_DEFAULT_0),
+        PortSpec::control("Mode", 0.0, 2.0, HINT_INTEGER | HINT_DEFAULT_0),
         PortSpec::control("Center Channel", 0.0, 6.0, HINT_INTEGER | HINT_DEFAULT_0),
         PortSpec::control("Ring 0", 0.0, 6.0, HINT_INTEGER | HINT_DEFAULT_0),
         PortSpec::control("Ring 1", 0.0, 6.0, HINT_INTEGER | HINT_DEFAULT_0),
@@ -65,22 +69,29 @@ impl Plugin for BeamPlugin {
         PortSpec::control("Ring Offset (deg)", 0.0, 360.0, HINT_DEFAULT_0),
         PortSpec::control("Radius (mm)", 20.0, 60.0, HINT_DEFAULT_MIDDLE),
         PortSpec::control("Gain (dB)", 0.0, 60.0, HINT_DEFAULT_0),
-        PortSpec::control("Dereverb", 0.0, 1.0, HINT_TOGGLED | HINT_DEFAULT_0),
+        PortSpec::control("Dereverb", 0.0, 1.0, HINT_TOGGLED | HINT_DEFAULT_1),
         PortSpec::control("Dereverb Strength", 0.0, 1.0, HINT_DEFAULT_MIDDLE),
         PortSpec::control("Dereverb T60 (s)", 0.1, 1.5, HINT_DEFAULT_MIDDLE),
         PortSpec::control("Raw Extra Delay (samples)", 0.0, 4800.0, HINT_INTEGER | HINT_DEFAULT_0),
+        PortSpec::control("Late Reverb", 0.0, 1.0, HINT_TOGGLED | HINT_DEFAULT_1),
+        PortSpec::control("Min WNG (dB)", MIN_WNG_LO, MIN_WNG_HI, HINT_DEFAULT_MIDDLE),
     ];
 
     fn new(sample_rate: f32) -> Self {
-        let steer = Steering { azimuth_deg: 0.0, elevation_deg: 0.0, omni: false };
+        let params = Params {
+            geometry: Geometry::UMA8,
+            steering: Steering { azimuth_deg: 0.0, elevation_deg: 0.0, mode: Mode::Superdirective, min_wng_db: -3.0 },
+            dereverb: true,
+            strength: 0.6,
+            late_reverb: true,
+            t60: 0.5,
+        };
         BeamPlugin {
-            beam: Beamformer::new(sample_rate, Geometry::UMA8, steer),
-            dereverb: Dereverb::new(sample_rate),
+            pipeline: Pipeline::new(sample_rate, &params),
             input: std::array::from_fn(|_| vec![0.0; CHUNK]),
-            beam_buf: vec![0.0; CHUNK],
-            raw_buf: vec![0.0; CHUNK],
             out_buf: vec![0.0; CHUNK],
-            raw_delay: vec![0.0; dereverb::LATENCY + MAX_RAW_EXTRA + 1],
+            raw_buf: vec![0.0; CHUNK],
+            raw_delay: vec![0.0; stft::LATENCY + MAX_RAW_EXTRA + 1],
             raw_pos: 0,
             gain: 1.0,
         }
@@ -88,26 +99,28 @@ impl Plugin for BeamPlugin {
 
     fn run(&mut self, ports: &Ports, n: usize) {
         let channel = |i: usize| ports.control(i, 0.0).round().clamp(0.0, 6.0) as usize;
-        let geometry = Geometry {
-            center: channel(CENTER),
-            ring: std::array::from_fn(|k| channel(RING0 + k)),
-            ring_offset_deg: ports.control(RING_OFFSET, 90.0),
-            radius_m: ports.control(RADIUS, 43.0).clamp(20.0, 60.0) / 1000.0,
+        let params = Params {
+            geometry: Geometry {
+                center: channel(CENTER),
+                ring: std::array::from_fn(|k| channel(RING0 + k)),
+                ring_offset_deg: ports.control(RING_OFFSET, 90.0),
+                radius_m: ports.control(RADIUS, 43.0).clamp(20.0, 60.0) / 1000.0,
+            },
+            steering: Steering {
+                azimuth_deg: ports.control(AZIMUTH, 0.0),
+                elevation_deg: ports.control(ELEVATION, 0.0).clamp(0.0, 90.0),
+                mode: Mode::from_control(ports.control(MODE, 0.0).clamp(0.0, 2.0)),
+                min_wng_db: ports.control(MIN_WNG, -3.0).clamp(MIN_WNG_LO, MIN_WNG_HI),
+            },
+            dereverb: ports.control(DEREVERB, 1.0) >= 0.5,
+            strength: ports.control(DR_STRENGTH, 0.6),
+            late_reverb: ports.control(LATE_REVERB, 1.0) >= 0.5,
+            t60: ports.control(DR_T60, 0.5),
         };
-        let steering = Steering {
-            azimuth_deg: ports.control(AZIMUTH, 0.0),
-            elevation_deg: ports.control(ELEVATION, 0.0).clamp(0.0, 90.0),
-            omni: ports.control(MODE, 0.0) >= 0.5,
-        };
-        self.beam.set_target(geometry, steering);
-        self.dereverb.set_params(
-            ports.control(DEREVERB, 0.0) >= 0.5,
-            ports.control(DR_STRENGTH, 0.6),
-            ports.control(DR_T60, 0.5),
-        );
+        self.pipeline.set_params(&params);
         let gain_target = 10f32.powf(ports.control(GAIN, 0.0).clamp(0.0, 60.0) / 20.0);
         let raw_extra = (ports.control(RAW_EXTRA, 0.0).round().max(0.0) as usize).min(MAX_RAW_EXTRA);
-        let raw_total = dereverb::LATENCY + raw_extra;
+        let raw_total = stft::LATENCY + raw_extra;
         let dlen = self.raw_delay.len();
 
         let mut off = 0;
@@ -117,11 +130,12 @@ impl Plugin for BeamPlugin {
                 ports.read(IN0 + c, off, &mut self.input[c][..m]);
             }
             let refs: [&[f32]; CHANNELS] = std::array::from_fn(|c| &self.input[c][..m]);
-            self.beam.process(&refs, &mut self.beam_buf[..m], &mut self.raw_buf[..m]);
-            self.dereverb.process(&self.beam_buf[..m], &mut self.out_buf[..m]);
+            self.pipeline.process(&refs, &mut self.out_buf[..m]);
+            let center = self.pipeline.center();
             for i in 0..m {
                 self.gain += (gain_target - self.gain) * 0.001;
-                self.raw_delay[self.raw_pos] = self.raw_buf[i];
+                let x = self.input[center][i];
+                self.raw_delay[self.raw_pos] = if x.is_finite() { x } else { 0.0 };
                 let delayed = self.raw_delay[(self.raw_pos + dlen - raw_total) % dlen];
                 self.raw_pos = (self.raw_pos + 1) % dlen;
                 self.out_buf[i] *= self.gain;

@@ -16,7 +16,7 @@ AUTOSTART_FILE = Path.home() / ".config/autostart/uma8-callmic.desktop"
 LAUNCHER = Path.home() / ".local/bin/uma8-callmic"
 REPO_DIR = Path(__file__).resolve().parent.parent
 
-#: Latenz von uma8_beam „Beam Out“: BASE_DELAY 25 + Dereverb 1024
-BEAM_LATENCY = 1049
+#: Latenz von uma8_beam „Beam Out“: FFT-Länge der STFT (fest in allen Modi)
+BEAM_LATENCY = 1024
 #: Latenz von deep_filter_mono (20 ms), gemessen mit tests/test_dfn_latency.py
 DFN_LATENCY = 960

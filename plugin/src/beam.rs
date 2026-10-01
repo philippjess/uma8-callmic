@@ -1,14 +1,26 @@
-//! Delay-and-Sum-Beamformer für das UMA-8 (7 Mikrofone in einer Ebene, Fernfeld).
+//! Festes Beamforming im STFT-Bereich für das UMA-8 (7 Mikrofone in einer Ebene, Fernfeld).
+//!
+//! Superdirektiv: MVDR gegen die Kohärenzmatrix Γ des 3D-diffusen Felds mit Diagonalladung μ,
+//! je Bin gerade so groß, dass der White-Noise-Gain (WNG) die Untergrenze einhält. Γ(f) ist reell,
+//! symmetrisch und richtungsunabhängig; in Platz-Reihenfolge (Mitte, Ring 0–5) hängt es nur vom
+//! Radius ab und wird je Radius einmal zerlegt (Γ = V·Λ·Vᵀ). Kanalzuordnung und Ringdrehung sind
+//! nur Umnummerierung bzw. Drehung. Für eine Richtung sind dann WNG, dᴴ(Γ+μI)⁻¹d und der
+//! Richtwirkungsfaktor O(7)-Summen über die Eigenwerte.
+
+use crate::jacobi;
+use crate::stft::{BINS, C32, FFT_LEN};
+use realfft::num_complex::Complex;
+use std::f64::consts::PI;
 
 pub const CHANNELS: usize = 7;
-pub const TAPS: usize = 32;
-const HALF: usize = TAPS / 2;
-/// Feste Grundverzögerung in Samples: halbe FIR-Länge plus maximale Laufzeit
-/// über das Array (60 mm bei 48 kHz ≈ 8,4 Samples). Das ist die Latenz.
-pub const BASE_DELAY: usize = 25;
-const HIST: usize = 64;
-pub const FADE_SAMPLES: usize = 2400;
-const SPEED_OF_SOUND: f32 = 343.0;
+pub const SPEED_OF_SOUND: f64 = 343.0;
+/// Überblendung bei Parameterwechseln: 10 Frames ≈ 53 ms.
+pub const FADE_FRAMES: usize = 10;
+const MU_MIN: f64 = 1e-6;
+const MU_MAX: f64 = 1e4;
+const BISECT_STEPS: usize = 30;
+
+type C64 = Complex<f64>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Geometry {
@@ -35,13 +47,45 @@ impl Geometry {
     }
 
     /// Position (x, y) in Metern je Kanal.
-    pub fn positions(&self) -> [[f32; 2]; CHANNELS] {
+    pub fn positions(&self) -> [[f64; 2]; CHANNELS] {
         let mut p = [[0.0; 2]; CHANNELS];
         for (k, &ch) in self.ring.iter().enumerate() {
-            let a = (self.ring_offset_deg + 60.0 * k as f32).to_radians();
-            p[ch] = [self.radius_m * a.cos(), self.radius_m * a.sin()];
+            let a = (self.ring_offset_deg as f64 + 60.0 * k as f64).to_radians();
+            p[ch] = [self.radius_m as f64 * a.cos(), self.radius_m as f64 * a.sin()];
         }
         p
+    }
+
+    pub fn distance(&self, a: usize, b: usize) -> f64 {
+        let p = self.positions();
+        (p[a][0] - p[b][0]).hypot(p[a][1] - p[b][1])
+    }
+
+    /// Platz je Kanal: 0 = Mitte, 1 + k = Ringposition k.
+    fn slots(&self) -> [usize; CHANNELS] {
+        let mut s = [0; CHANNELS];
+        for (k, &ch) in self.ring.iter().enumerate() {
+            s[ch] = k + 1;
+        }
+        s
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Superdirective,
+    Omni,
+    DelayAndSum,
+}
+
+impl Mode {
+    /// Control „Mode“: 0 = superdirektiv, 1 = alle Richtungen (Mittel-Mikrofon), 2 = Delay-and-Sum.
+    pub fn from_control(v: f32) -> Mode {
+        match v.round() as i32 {
+            1 => Mode::Omni,
+            2 => Mode::DelayAndSum,
+            _ => Mode::Superdirective,
+        }
     }
 }
 
@@ -49,144 +93,231 @@ impl Geometry {
 pub struct Steering {
     pub azimuth_deg: f32,
     pub elevation_deg: f32,
-    pub omni: bool,
+    pub mode: Mode,
+    /// Untergrenze des White-Noise-Gains in dB (nur superdirektiv).
+    pub min_wng_db: f32,
 }
 
-#[derive(Clone, Copy)]
-struct Taps {
-    offset: [usize; CHANNELS],
-    h: [[f32; TAPS]; CHANNELS],
+/// Kohärenz des 3D-diffusen Felds zweier Mikrofone, `kd` = Wellenzahl · Abstand: sinc(kd).
+pub fn diffuse_coherence(kd: f64) -> f64 {
+    if kd.abs() < 1e-9 {
+        1.0
+    } else {
+        kd.sin() / kd
+    }
 }
 
-impl Taps {
-    fn compute(geom: &Geometry, steer: &Steering, sample_rate: f32) -> Taps {
-        let mut t = Taps { offset: [0; CHANNELS], h: [[0.0; TAPS]; CHANNELS] };
-        let pos = geom.positions();
-        let (az, el) = (steer.azimuth_deg.to_radians(), steer.elevation_deg.to_radians());
-        let u = [el.cos() * az.cos(), el.cos() * az.sin()];
-        for ch in 0..CHANNELS {
-            let weight = if steer.omni {
-                if ch == geom.center { 1.0 } else { 0.0 }
-            } else {
-                1.0 / CHANNELS as f32
-            };
-            // Kanal ch hört die Welle um tau Samples früher; um genau so viel mehr verzögern.
-            let tau = if steer.omni {
-                0.0
-            } else {
-                (pos[ch][0] * u[0] + pos[ch][1] * u[1]) / SPEED_OF_SOUND * sample_rate
-            };
-            let d = (BASE_DELAY as f32 + tau).clamp((HALF - 1) as f32, (HIST - HALF) as f32);
-            let (offset, h) = fractional_delay(d);
-            t.offset[ch] = offset;
-            for k in 0..TAPS {
-                t.h[ch][k] = h[k] * weight;
-            }
+/// Wellenzahl 2πf/c von Bin `k`.
+pub fn wavenumber(k: usize, sample_rate: f64) -> f64 {
+    2.0 * PI * k as f64 * sample_rate / FFT_LEN as f64 / SPEED_OF_SOUND
+}
+
+/// Eigenzerlegung von Γ(f) je Bin in Platz-Reihenfolge; hängt nur vom Radius ab.
+struct Eigen {
+    radius_m: f32,
+    lambda: Vec<[f64; CHANNELS]>,
+    v: Vec<[[f64; CHANNELS]; CHANNELS]>,
+}
+
+impl Eigen {
+    fn new() -> Self {
+        Eigen { radius_m: f32::NAN, lambda: vec![[0.0; CHANNELS]; BINS], v: vec![[[0.0; CHANNELS]; CHANNELS]; BINS] }
+    }
+
+    /// Nur bei geändertem Radius neu (≈ 3 ms für alle Bins).
+    fn update(&mut self, radius_m: f32, sample_rate: f64) {
+        if self.radius_m == radius_m {
+            return;
         }
-        t
+        self.radius_m = radius_m;
+        let slot_geom = Geometry { center: 0, ring: [1, 2, 3, 4, 5, 6], ring_offset_deg: 0.0, radius_m };
+        let dist: [[f64; CHANNELS]; CHANNELS] =
+            std::array::from_fn(|i| std::array::from_fn(|j| slot_geom.distance(i, j)));
+        for k in 0..BINS {
+            let wn = wavenumber(k, sample_rate);
+            let gamma = dist.map(|row| row.map(|d| diffuse_coherence(wn * d)));
+            let (l, v) = jacobi::eigh(gamma);
+            self.lambda[k] = l.map(|x| x.max(0.0));
+            self.v[k] = v;
+        }
     }
 }
 
-/// Gefensterte Sinc-Interpolation: y[n] = Σ h[k]·x[n − offset − k] ≈ x[n − d].
-pub fn fractional_delay(d: f32) -> (usize, [f32; TAPS]) {
-    use std::f32::consts::PI;
-    let offset = d.floor() as usize - (HALF - 1);
-    let mut h = [0.0f32; TAPS];
-    let mut sum = 0.0;
-    for (k, v) in h.iter_mut().enumerate() {
-        let t = (offset + k) as f32 - d;
-        let sinc = if t.abs() < 1e-6 { 1.0 } else { (PI * t).sin() / (PI * t) };
-        let window = 0.5 * (1.0 + (PI * t / HALF as f32).cos());
-        *v = sinc * window;
-        sum += *v;
+/// Kleinstes μ ∈ [MU_MIN, MU_MAX] mit WNG(μ) ≥ `wng_min`; WNG wächst monoton mit μ.
+/// `pw[i]` = |(Vᵀd)_i|².
+fn regularization(lambda: &[f64; CHANNELS], pw: &[f64; CHANNELS], wng_min: f64) -> f64 {
+    let wng = |mu: f64| {
+        let (mut a, mut b) = (0.0, 0.0);
+        for i in 0..CHANNELS {
+            let r = pw[i] / (lambda[i] + mu);
+            a += r;
+            b += r / (lambda[i] + mu);
+        }
+        a * a / b
+    };
+    if wng(MU_MIN) >= wng_min {
+        return MU_MIN;
     }
-    for v in h.iter_mut() {
-        *v /= sum;
+    if wng(MU_MAX) < wng_min {
+        return MU_MAX;
     }
-    (offset, h)
+    let (mut lo, mut hi) = (MU_MIN.ln(), MU_MAX.ln());
+    for _ in 0..BISECT_STEPS {
+        let mid = 0.5 * (lo + hi);
+        if wng(mid.exp()) >= wng_min {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi.exp()
+}
+
+/// Gewichte je Bin (Ausgang y = Σ conj(w_m)·x_m) und Richtwirkungsfaktor 1/(wᴴΓw).
+pub struct Weights {
+    w: Vec<[C32; CHANNELS]>,
+    di: Vec<f32>,
+}
+
+impl Weights {
+    fn new() -> Self {
+        Weights { w: vec![[C32::new(0.0, 0.0); CHANNELS]; BINS], di: vec![1.0; BINS] }
+    }
+
+    fn design(&mut self, eig: &Eigen, geom: &Geometry, steer: &Steering, sample_rate: f64) {
+        let p = geom.positions();
+        let slot = geom.slots();
+        let (az, el) = ((steer.azimuth_deg as f64).to_radians(), (steer.elevation_deg as f64).to_radians());
+        let u = [el.cos() * az.cos(), el.cos() * az.sin()];
+        let wng_min = 10f64.powf(steer.min_wng_db as f64 / 10.0);
+        for k in 0..BINS {
+            let wn = wavenumber(k, sample_rate);
+            // Mikrofon m hört die ebene Welle um τ_m = p_m·u/c früher: d_m = exp(+j·2πf·τ_m).
+            let d: [C64; CHANNELS] = std::array::from_fn(|m| C64::from_polar(1.0, wn * (p[m][0] * u[0] + p[m][1] * u[1])));
+            let (lambda, v) = (&eig.lambda[k], &eig.v[k]);
+            let b: [C64; CHANNELS] = std::array::from_fn(|i| (0..CHANNELS).map(|m| d[m] * v[slot[m]][i]).sum());
+            let pw = b.map(|x| x.norm_sqr());
+            let (w, di): ([C64; CHANNELS], f64) = match steer.mode {
+                Mode::Omni => (std::array::from_fn(|m| C64::new(if m == geom.center { 1.0 } else { 0.0 }, 0.0)), 1.0),
+                Mode::DelayAndSum => {
+                    let n = CHANNELS as f64;
+                    let wgw: f64 = (0..CHANNELS).map(|i| lambda[i] * pw[i]).sum::<f64>() / (n * n);
+                    (d.map(|x| x / n), 1.0 / wgw.max(1e-12))
+                }
+                Mode::Superdirective => {
+                    let mu = regularization(lambda, &pw, wng_min);
+                    let a: f64 = (0..CHANNELS).map(|i| pw[i] / (lambda[i] + mu)).sum();
+                    // w = V·c mit c = (Λ+μI)⁻¹·b / dᴴ(Γ+μI)⁻¹d; wᴴΓw = Σ λ_i·|c_i|².
+                    let c: [C64; CHANNELS] = std::array::from_fn(|i| b[i] / ((lambda[i] + mu) * a));
+                    let wgw: f64 = (0..CHANNELS).map(|i| lambda[i] * c[i].norm_sqr()).sum();
+                    (std::array::from_fn(|m| (0..CHANNELS).map(|i| c[i] * v[slot[m]][i]).sum()), 1.0 / wgw.max(1e-12))
+                }
+            };
+            self.w[k] = w.map(|x| C32::new(x.re as f32, x.im as f32));
+            self.di[k] = di as f32;
+        }
+    }
+}
+
+#[inline]
+fn apply(w: &[C32; CHANNELS], x: &[Vec<C32>], k: usize) -> C32 {
+    let mut acc = C32::new(0.0, 0.0);
+    for m in 0..CHANNELS {
+        acc += w[m].conj() * x[m][k];
+    }
+    acc
 }
 
 pub struct Beamformer {
-    sample_rate: f32,
-    hist: [[f32; HIST]; CHANNELS],
-    pos: usize,
+    sample_rate: f64,
+    eigen: Eigen,
     current: (Geometry, Steering),
     target: (Geometry, Steering),
     fading_to: (Geometry, Steering),
-    taps: Taps,
-    next_taps: Taps,
+    cur: Weights,
+    next: Weights,
     fade: Option<usize>,
+    started: bool,
 }
 
 impl Beamformer {
     pub fn new(sample_rate: f32, geom: Geometry, steer: Steering) -> Self {
-        let taps = Taps::compute(&geom, &steer, sample_rate);
+        let sr = sample_rate as f64;
+        let mut eigen = Eigen::new();
+        eigen.update(geom.radius_m, sr);
+        let mut cur = Weights::new();
+        cur.design(&eigen, &geom, &steer, sr);
         Beamformer {
-            sample_rate,
-            hist: [[0.0; HIST]; CHANNELS],
-            pos: 0,
+            sample_rate: sr,
+            eigen,
             current: (geom, steer),
             target: (geom, steer),
             fading_to: (geom, steer),
-            taps,
-            next_taps: taps,
+            cur,
+            next: Weights::new(),
             fade: None,
+            started: false,
         }
     }
 
-    /// Latenz des Beam-Ausgangs in Samples.
-    pub fn latency(&self) -> usize {
-        BASE_DELAY
-    }
-
     /// Neue Geometrie/Richtung. Ungültige Geometrien werden ignoriert.
-    /// Der Wechsel wird über `FADE_SAMPLES` weich übergeblendet.
     pub fn set_target(&mut self, geom: Geometry, steer: Steering) {
         if geom.is_valid() {
             self.target = (geom, steer);
         }
     }
 
-    fn apply(&self, taps: &Taps) -> f32 {
-        let mut acc = 0.0;
-        for ch in 0..CHANNELS {
-            let base = self.pos + HIST - taps.offset[ch];
-            let h = &taps.h[ch];
-            let x = &self.hist[ch];
-            for k in 0..TAPS {
-                acc += h[k] * x[(base - k) & (HIST - 1)];
-            }
-        }
-        acc
+    /// Geometrie der gerade wirksamen Gewichte.
+    pub fn geometry(&self) -> &Geometry {
+        &self.current.0
     }
 
-    /// `input[ch]` sind gleich lang wie `beam` und `raw`.
-    pub fn process(&mut self, input: &[&[f32]; CHANNELS], beam: &mut [f32], raw: &mut [f32]) {
-        use std::f32::consts::PI;
-        for n in 0..beam.len() {
-            if self.fade.is_none() && self.target != self.current {
-                self.fading_to = self.target;
-                self.next_taps = Taps::compute(&self.fading_to.0, &self.fading_to.1, self.sample_rate);
-                self.fade = Some(0);
+    /// Richtung/Modus der gerade wirksamen Gewichte.
+    pub fn steering(&self) -> &Steering {
+        &self.current.1
+    }
+
+    fn design(&mut self, to: (Geometry, Steering), next: bool) {
+        self.eigen.update(to.0.radius_m, self.sample_rate);
+        let w = if next { &mut self.next } else { &mut self.cur };
+        w.design(&self.eigen, &to.0, &to.1, self.sample_rate);
+    }
+
+    /// Ein Frame: `y` = Beam-Spektrum, `di` = Richtwirkungsfaktor der wirksamen Gewichte je Bin.
+    /// Vor dem ersten Frame gilt das Ziel sofort (es wurde noch nichts ausgegeben); danach wird
+    /// jeder Wechsel über `FADE_FRAMES` mit Kosinus-Rampe übergeblendet.
+    pub fn process(&mut self, x: &[Vec<C32>], y: &mut [C32], di: &mut [f32]) {
+        if !self.started {
+            self.started = true;
+            if self.target != self.current {
+                self.current = self.target;
+                self.design(self.target, false);
             }
-            self.pos = (self.pos + 1) & (HIST - 1);
-            for ch in 0..CHANNELS {
-                self.hist[ch][self.pos] = input[ch][n];
+        }
+        if self.fade.is_none() && self.target != self.current {
+            self.fading_to = self.target;
+            self.design(self.fading_to, true);
+            self.fade = Some(0);
+        }
+        let Some(i) = self.fade else {
+            for k in 0..BINS {
+                y[k] = apply(&self.cur.w[k], x, k);
             }
-            let mut y = self.apply(&self.taps);
-            if let Some(i) = self.fade {
-                let g = 0.5 - 0.5 * (PI * i as f32 / FADE_SAMPLES as f32).cos();
-                y = y * (1.0 - g) + self.apply(&self.next_taps) * g;
-                if i + 1 >= FADE_SAMPLES {
-                    self.taps = self.next_taps;
-                    self.current = self.fading_to;
-                    self.fade = None;
-                } else {
-                    self.fade = Some(i + 1);
-                }
-            }
-            beam[n] = y;
-            raw[n] = self.hist[self.current.0.center][(self.pos + HIST - BASE_DELAY) & (HIST - 1)];
+            di.copy_from_slice(&self.cur.di);
+            return;
+        };
+        let g = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / (FADE_FRAMES + 1) as f32).cos();
+        for k in 0..BINS {
+            let a = apply(&self.cur.w[k], x, k);
+            y[k] = a + (apply(&self.next.w[k], x, k) - a) * g;
+            di[k] = self.cur.di[k] + (self.next.di[k] - self.cur.di[k]) * g;
+        }
+        if i + 1 >= FADE_FRAMES {
+            std::mem::swap(&mut self.cur, &mut self.next);
+            self.current = self.fading_to;
+            self.fade = None;
+        } else {
+            self.fade = Some(i + 1);
         }
     }
 }
@@ -194,33 +325,37 @@ impl Beamformer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f32::consts::PI;
-    const SR: f32 = 48000.0;
+    const SR: f64 = 48000.0;
 
-    /// Ebene Welle eines Sinus aus Richtung (az, el), analytisch je Kanal.
-    fn plane_wave_sine(geom: &Geometry, az: f32, el: f32, freq: f32, len: usize) -> Vec<Vec<f32>> {
-        let pos = geom.positions();
-        let (a, e) = (az.to_radians(), el.to_radians());
-        let u = [e.cos() * a.cos(), e.cos() * a.sin()];
-        (0..CHANNELS)
-            .map(|ch| {
-                let lead = (pos[ch][0] * u[0] + pos[ch][1] * u[1]) / SPEED_OF_SOUND;
-                (0..len).map(|n| (2.0 * PI * freq * (n as f32 / SR + lead)).sin()).collect()
-            })
-            .collect()
+    fn steer(mode: Mode, az: f32, el: f32) -> Steering {
+        Steering { azimuth_deg: az, elevation_deg: el, mode, min_wng_db: -3.0 }
     }
 
-    fn run(bf: &mut Beamformer, ch: &[Vec<f32>], from: usize, to: usize, beam: &mut [f32], raw: &mut [f32]) {
-        let refs: [&[f32]; CHANNELS] = std::array::from_fn(|i| &ch[i][from..to]);
-        bf.process(&refs, &mut beam[from..to], &mut raw[from..to]);
+    fn designed_for(g: &Geometry, s: Steering) -> Weights {
+        let mut eig = Eigen::new();
+        eig.update(g.radius_m, SR);
+        let mut w = Weights::new();
+        w.design(&eig, g, &s, SR);
+        w
     }
 
-    fn rms(x: &[f32]) -> f32 {
-        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+    fn designed(s: Steering) -> Weights {
+        designed_for(&Geometry::UMA8, s)
     }
 
-    fn steer(az: f32) -> Steering {
-        Steering { azimuth_deg: az, elevation_deg: 0.0, omni: false }
+    fn steering_vector(k: usize, az: f64, el: f64) -> [C64; CHANNELS] {
+        let p = Geometry::UMA8.positions();
+        let (az, el) = (az.to_radians(), el.to_radians());
+        let wn = wavenumber(k, SR);
+        std::array::from_fn(|m| C64::from_polar(1.0, wn * (p[m][0] * el.cos() * az.cos() + p[m][1] * el.cos() * az.sin())))
+    }
+
+    fn bin(f: f64) -> usize {
+        (f * FFT_LEN as f64 / SR).round() as usize
+    }
+
+    fn db(x: f32) -> f32 {
+        10.0 * x.log10()
     }
 
     #[test]
@@ -233,80 +368,85 @@ mod tests {
     }
 
     #[test]
-    fn fractional_delay_matches_shifted_sine() {
-        let (offset, h) = fractional_delay(25.3);
-        let f = 1000.0;
-        let x: Vec<f32> = (0..400).map(|n| (2.0 * PI * f * n as f32 / SR).sin()).collect();
-        for n in 100..400 {
-            let y: f32 = (0..TAPS).map(|k| h[k] * x[n - offset - k]).sum();
-            let expect = (2.0 * PI * f * (n as f32 - 25.3) / SR).sin();
-            assert!((y - expect).abs() < 2e-3, "n={n}: {y} vs {expect}");
+    fn all_modes_are_distortionless_towards_target() {
+        for mode in [Mode::Superdirective, Mode::DelayAndSum] {
+            let w = designed(steer(mode, 30.0, 25.0));
+            for k in 1..BINS {
+                let d = steering_vector(k, 30.0, 25.0);
+                let r: C64 = (0..CHANNELS).map(|m| C64::new(w.w[k][m].re as f64, -w.w[k][m].im as f64) * d[m]).sum();
+                assert!((r - 1.0).norm() < 1e-4, "{mode:?} k={k}: {r}");
+            }
         }
     }
 
     #[test]
-    fn steered_beam_passes_target_and_rejects_opposite() {
-        let g = Geometry::UMA8;
-        for &f in &[2000.0f32, 3000.0, 4000.0, 6000.0] {
-            let x = plane_wave_sine(&g, 90.0, 0.0, f, 9600);
-            let (mut b_on, mut b_off, mut raw) = (vec![0.0; 9600], vec![0.0; 9600], vec![0.0; 9600]);
-            run(&mut Beamformer::new(SR, g, steer(90.0)), &x, 0, 9600, &mut b_on, &mut raw);
-            run(&mut Beamformer::new(SR, g, steer(270.0)), &x, 0, 9600, &mut b_off, &mut raw);
-            let (r_on, r_off) = (rms(&b_on[200..]), rms(&b_off[200..]));
-            assert!((r_on - 0.7071).abs() < 0.03, "f={f}: on-axis rms {r_on}");
-            let db = 20.0 * (r_on / r_off).log10();
-            assert!(db >= 6.0, "f={f}: nur {db} dB");
+    fn superdirective_meets_wng_floor_and_beats_delay_and_sum() {
+        let sd = designed(steer(Mode::Superdirective, 0.0, 25.0));
+        let ds = designed(steer(Mode::DelayAndSum, 0.0, 25.0));
+        for k in 1..BINS {
+            let wng = 1.0 / sd.w[k].iter().map(|x| x.norm_sqr()).sum::<f32>();
+            assert!(db(wng) >= -3.0 - 1e-3, "k={k}: WNG {} dB", db(wng));
+            assert!(sd.di[k] >= ds.di[k] * 0.999, "k={k}");
+        }
+        // Erwartung aus der numpy-Auslegung (Az 0°, El 25°, WNG ≥ −3 dB)
+        for (f, sd_db, ds_db) in [(500.0, 5.8, 0.4), (1000.0, 7.5, 1.6), (2000.0, 8.1, 5.0)] {
+            let k = bin(f);
+            assert!((db(sd.di[k]) - sd_db).abs() < 0.3, "{f} Hz: SD-DI {} dB", db(sd.di[k]));
+            assert!((db(ds.di[k]) - ds_db).abs() < 0.3, "{f} Hz: DS-DI {} dB", db(ds.di[k]));
+        }
+        // Bei tiefen Frequenzen begrenzt die WNG-Untergrenze: μ ist so klein wie möglich, WNG ≈ −3 dB.
+        let k = bin(500.0);
+        let wng = 1.0 / sd.w[k].iter().map(|x| x.norm_sqr()).sum::<f32>();
+        assert!((db(wng) + 3.0).abs() < 0.01, "WNG {} dB", db(wng));
+    }
+
+    #[test]
+    fn other_channel_order_matches_direct_computation() {
+        // Kanäle vertauscht, Ring gedreht: Gewichte über Platz-Zuordnung müssen zur
+        // direkt in Kanal-Reihenfolge gebildeten Γ passen.
+        let g = Geometry { center: 3, ring: [5, 0, 6, 2, 1, 4], ring_offset_deg: 17.0, radius_m: 0.04 };
+        let w = designed_for(&g, steer(Mode::Superdirective, 200.0, 30.0));
+        let p = g.positions();
+        let (az, el) = (200f64.to_radians(), 30f64.to_radians());
+        for k in [5, 11, 21, 43, 85, 171, 300] {
+            let wn = wavenumber(k, SR);
+            let ww: [C64; CHANNELS] = std::array::from_fn(|m| C64::new(w.w[k][m].re as f64, w.w[k][m].im as f64));
+            let r: C64 = (0..CHANNELS)
+                .map(|m| ww[m].conj() * C64::from_polar(1.0, wn * (p[m][0] * el.cos() * az.cos() + p[m][1] * el.cos() * az.sin())))
+                .sum();
+            assert!((r - 1.0).norm() < 1e-4, "k={k}: wᴴd = {r}");
+            let mut wgw = C64::new(0.0, 0.0);
+            for i in 0..CHANNELS {
+                for j in 0..CHANNELS {
+                    wgw += ww[i].conj() * diffuse_coherence(wn * g.distance(i, j)) * ww[j];
+                }
+            }
+            assert!((1.0 / wgw.re - w.di[k] as f64).abs() < 1e-3 * w.di[k] as f64, "k={k}: DI");
         }
     }
 
     #[test]
-    fn impulse_from_zenith_has_base_latency() {
-        let mut x = vec![vec![0.0f32; 200]; CHANNELS];
-        for ch in x.iter_mut() {
-            ch[50] = 1.0;
+    fn omni_is_center_mic() {
+        let w = designed(steer(Mode::Omni, 123.0, 10.0));
+        for k in 0..BINS {
+            assert_eq!(w.w[k][0], C32::new(1.0, 0.0));
+            assert!(w.w[k][1..].iter().all(|x| x.norm() == 0.0));
+            assert_eq!(w.di[k], 1.0);
         }
-        let cases = [
-            Steering { azimuth_deg: 0.0, elevation_deg: 90.0, omni: false },
-            Steering { azimuth_deg: 123.0, elevation_deg: 0.0, omni: true },
-        ];
-        for s in cases {
-            let (mut beam, mut raw) = (vec![0.0; 200], vec![0.0; 200]);
-            run(&mut Beamformer::new(SR, Geometry::UMA8, s), &x, 0, 200, &mut beam, &mut raw);
-            let peak = (0..200).max_by(|&a, &b| beam[a].abs().total_cmp(&beam[b].abs())).unwrap();
-            assert_eq!(peak, 50 + BASE_DELAY, "{s:?}");
-            assert!((beam[50 + BASE_DELAY] - 1.0).abs() < 1e-3);
-            assert_eq!(raw[50 + BASE_DELAY], 1.0);
-        }
-    }
-
-    #[test]
-    fn steering_change_is_click_free() {
-        let g = Geometry::UMA8;
-        let len = 24000;
-        let x = plane_wave_sine(&g, 0.0, 0.0, 1000.0, len);
-        let mut bf = Beamformer::new(SR, g, steer(0.0));
-        let (mut y, mut raw) = (vec![0.0; len], vec![0.0; len]);
-        run(&mut bf, &x, 0, len / 2, &mut y, &mut raw);
-        bf.set_target(g, steer(180.0));
-        run(&mut bf, &x, len / 2, len, &mut y, &mut raw);
-        let max_step = 2.0 * PI * 1000.0 / SR * 1.07;
-        // erst nach dem Einschwingen prüfen (Signal setzt bei n = 0 abrupt ein)
-        for n in (2 * BASE_DELAY + TAPS)..len {
-            assert!((y[n] - y[n - 1]).abs() <= max_step, "Sprung bei n={n}");
-        }
-        assert_eq!(bf.current.1, steer(180.0), "Überblendung nicht abgeschlossen");
     }
 
     #[test]
     fn invalid_geometry_is_ignored() {
-        let mut bf = Beamformer::new(SR, Geometry::UMA8, steer(0.0));
+        let s = steer(Mode::Superdirective, 0.0, 0.0);
+        let mut bf = Beamformer::new(SR as f32, Geometry::UMA8, s);
         let mut bad = Geometry::UMA8;
         bad.ring[0] = 0;
-        bf.set_target(bad, steer(90.0));
-        let x = vec![vec![0.0f32; 4000]; CHANNELS];
-        let (mut y, mut raw) = (vec![0.0; 4000], vec![0.0; 4000]);
-        run(&mut bf, &x, 0, 4000, &mut y, &mut raw);
-        assert_eq!(bf.current.0, Geometry::UMA8);
-        assert_eq!(bf.current.1, steer(0.0));
+        bf.set_target(bad, steer(Mode::Superdirective, 90.0, 0.0));
+        let x = vec![vec![C32::new(0.0, 0.0); BINS]; CHANNELS];
+        let (mut y, mut di) = (vec![C32::new(0.0, 0.0); BINS], vec![0.0; BINS]);
+        for _ in 0..2 * FADE_FRAMES {
+            bf.process(&x, &mut y, &mut di);
+        }
+        assert_eq!(bf.current, (Geometry::UMA8, s));
     }
 }

@@ -19,6 +19,7 @@ from .pwctl import raw_source
 
 DIRECTIONS = [("Kalibriert", "calibrated"), ("Manuell", "manual"),
               ("Automatisch nachführen", "tracking"), ("Alle Richtungen", "omni")]
+BEAMFORMERS = [("Superdirektiv", "superdirective"), ("Delay-and-Sum (zum Vergleich)", "delay_and_sum")]
 BLOCK = 9600  # 0,2 s
 
 
@@ -72,9 +73,17 @@ class OptionsDialog(QDialog):
         self.manual = _slider(0, 359, cfg.manual_azimuth)
         self.manual_label = QLabel(f"{cfg.manual_azimuth:.0f}°")
         form.addRow("Winkel (manuell)", _with_label(self.manual, self.manual_label))
+        self.beamformer = QComboBox()
+        for text, key in BEAMFORMERS:
+            self.beamformer.addItem(text, key)
+        self.beamformer.setCurrentIndex([k for _, k in BEAMFORMERS].index(cfg.beamformer))
+        form.addRow("Beamformer", self.beamformer)
         self.dereverb = QCheckBox("Hallunterdrückung")
         self.dereverb.setChecked(cfg.dereverb)
         form.addRow("", self.dereverb)
+        self.late = QCheckBox("Späten Nachhall zusätzlich dämpfen")
+        self.late.setChecked(cfg.late_reverb)
+        form.addRow("", self.late)
         self.strength = _slider(0, 100, cfg.dereverb_strength * 100)
         form.addRow("Stärke", self.strength)
         self.t60 = QDoubleSpinBox()
@@ -102,7 +111,8 @@ class OptionsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(buttons)
-        for signal in (self.direction.currentIndexChanged, self.manual.valueChanged, self.dereverb.toggled,
+        for signal in (self.direction.currentIndexChanged, self.manual.valueChanged,
+                       self.beamformer.currentIndexChanged, self.dereverb.toggled, self.late.toggled,
                        self.strength.valueChanged, self.t60.valueChanged, self.noise.valueChanged,
                        self.gain.valueChanged, self.autostart.toggled):
             signal.connect(self._changed)
@@ -117,14 +127,17 @@ class OptionsDialog(QDialog):
 
     def _update_enabled(self) -> None:
         self.manual.setEnabled(self.direction.currentData() == "manual")
-        self.strength.setEnabled(self.dereverb.isChecked())
-        self.t60.setEnabled(self.dereverb.isChecked())
+        self.beamformer.setEnabled(self.direction.currentData() != "omni")
+        self.strength.setEnabled(self.dereverb.isChecked() or self.late.isChecked())
+        self.t60.setEnabled(self.late.isChecked())
 
     def _changed(self, *_):
         updates = {
             "direction_mode": self.direction.currentData(),
             "manual_azimuth": float(self.manual.value()),
+            "beamformer": self.beamformer.currentData(),
             "dereverb": self.dereverb.isChecked(),
+            "late_reverb": self.late.isChecked(),
             "dereverb_strength": self.strength.value() / 100.0,
             "dereverb_t60": round(self.t60.value(), 2),
             "noise_reduction_db": float(self.noise.value()),

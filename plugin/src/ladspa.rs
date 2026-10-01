@@ -19,6 +19,7 @@ pub const HINT_INTEGER: c_int = 0x20;
 pub const HINT_DEFAULT_MIDDLE: c_int = 0xC0;
 pub const HINT_DEFAULT_MAXIMUM: c_int = 0x140;
 pub const HINT_DEFAULT_0: c_int = 0x200;
+pub const HINT_DEFAULT_1: c_int = 0x240;
 
 pub const PROPERTY_HARD_RT_CAPABLE: c_int = 0x4;
 
