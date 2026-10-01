@@ -61,6 +61,8 @@ class LoadResult:
     config: Config
     warnings: list[str]
     broken: bool = False
+    #: Alte Datei an neue Bedeutungen angepasst; das Tray speichert sie dann einmal und sagt Bescheid
+    migrated: bool = False
 
 
 def _is_int(v) -> bool:
@@ -93,10 +95,13 @@ def load(path: Path) -> LoadResult:
         raw = tomllib.loads(path.read_text())
     except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
         return LoadResult(Config(), [f"Einstellungen unlesbar, Standardwerte aktiv: {e}"], broken=True)
-    if "dereverb" in raw and "late_reverb" not in raw:
+    migrated = "dereverb" in raw and "late_reverb" not in raw
+    if migrated:
         # Datei von vor der Kohärenz-Hallunterdrückung: „dereverb“ schaltete das T60-Modell, das jetzt
         # „late_reverb“ heißt. Der alte Wert war meist nur der Standard (aus); es gelten die neuen Standards.
-        raw = {k: v for k, v in raw.items() if k != "dereverb"}
+        # Auch die Stärke: sie setzt jetzt zusätzlich die Untergrenze des Kohärenzfilters (−25·s dB), ein alter
+        # Wert nahe 1 ergäbe zusammen bis zu −40 dB.
+        raw = {k: v for k, v in raw.items() if k not in ("dereverb", "dereverb_strength")}
     cfg, warnings = Config(), []
     for f in fields(Config):
         if f.name not in raw:
@@ -109,7 +114,7 @@ def load(path: Path) -> LoadResult:
     if not cfg.geometry().is_valid():
         warnings.append("Ungültige Kanalzuordnung, Standard wird verwendet")
         cfg.center_channel, cfg.ring = 0, list(DEFAULT_RING)
-    return LoadResult(cfg, warnings)
+    return LoadResult(cfg, warnings, migrated=migrated)
 
 
 def _toml(v) -> str:

@@ -61,6 +61,10 @@ class TrayApp:
         self.timer.start(2000)
         self.refresh()
         self.update_tracking()
+        if res.migrated:
+            self.save_config()
+            self.tray.showMessage("UMA-8 Call Mic", "Neue Hallunterdrückung ist jetzt an (Stärke auf Standard "
+                                  "zurückgesetzt). Abschalten unter Optionen…")
         if not self.cfg.geometry_checked:
             QTimer.singleShot(1500, self.open_geometry)
         elif not self.cfg.calibrated:
