@@ -52,6 +52,53 @@ def test_other_dialogs_construct(app):
     GeometryDialog(UMA8, lambda ran, adopt: None).close()
 
 
+class _LaggingCapture:
+    """Liefert wie pw-record: Daten erst kurz nach dem Start, danach 0,2 s je Tick."""
+
+    def __init__(self, lag_frames: int, stall_after: int | None = None):
+        self.written, self.lag, self.stall_after, self.ticks = -lag_frames, lag_frames, stall_after, 0
+        self.rng = np.random.default_rng(0)
+
+    def advance(self):
+        self.ticks += 1
+        if self.stall_after is None or self.ticks <= self.stall_after:
+            self.written += 9600
+
+    def total(self):
+        return max(self.written, 0)
+
+    def latest(self, frames):
+        return self.rng.normal(0, 1e-4, (frames, 8)).astype(np.float32) if self.total() >= frames else None
+
+    def close(self):
+        pass
+
+
+def _run_geometry(app, cap, max_ticks=80):
+    done = []
+    dlg = GeometryDialog(UMA8, lambda ran, adopt: done.append(ran))
+    dlg.capture, dlg.ticks = cap, 0
+    for _ in range(max_ticks):
+        if dlg.capture is None:
+            break
+        cap.advance()
+        dlg._tick()
+    text = dlg.info.text()
+    dlg.close()
+    return done, text, cap.ticks
+
+
+def test_geometry_check_waits_for_full_ten_seconds(app):
+    """Nach 50 Ticks fehlt pw-record noch der Anlauf (gemessen 1792 Frames); die Prüfung wartet darauf."""
+    done, text, ticks = _run_geometry(app, _LaggingCapture(lag_frames=1792))
+    assert done == [True] and "Zu wenig Daten" not in text and ticks == 51
+
+
+def test_geometry_check_gives_up_on_stalled_capture(app):
+    done, text, ticks = _run_geometry(app, _LaggingCapture(lag_frames=0, stall_after=30))
+    assert done == [] and "Zu wenig Daten" in text and ticks == GeometryDialog.TICKS + GeometryDialog.GRACE_TICKS
+
+
 def test_level_dbfs():
     assert abs(level_dbfs(np.full(100, 0.5)) - (-6.02)) < 0.01
 

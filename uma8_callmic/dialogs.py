@@ -321,7 +321,10 @@ class CalibrationDialog(_RecordingDialog):
 
 
 class GeometryDialog(_RecordingDialog):
-    TICKS = 50  # 10 s
+    TICKS = 50  # 10 s Aufnahme
+    #: Nach 10 s Wanduhr fehlen pw-record noch Start und letzter Block (gemessen 478208 statt 480000 Frames);
+    #: fertig ist die Messung erst mit 10 s Daten, spätestens 2 s danach gilt sie als abgerissen
+    GRACE_TICKS = 10
 
     def __init__(self, default: ArrayGeometry, on_done: Callable[[bool, ArrayGeometry | None], None], parent=None):
         super().__init__("UMA-8 Call Mic – Kanalzuordnung",
@@ -337,15 +340,17 @@ class GeometryDialog(_RecordingDialog):
 
     def _tick(self):
         self.ticks += 1
-        self.progress.setValue(int(100 * min(self.ticks, self.TICKS) / self.TICKS))
+        need = self.TICKS * BLOCK
+        got = self.capture.total() if self.capture else 0
+        self.progress.setValue(int(100 * min(got, need) / need))
         if self._no_data():
             return
         recent = self.capture.latest(BLOCK)
         if recent is not None:
             self.meter.show_level(level_dbfs(recent[:, self.default.center]))
-        if self.ticks < self.TICKS:
+        if got < need and self.ticks < self.TICKS + self.GRACE_TICKS:
             return
-        block = self.capture.latest(self.TICKS * BLOCK)
+        block = self.capture.latest(need)
         self._finish()
         if block is None:
             self.info.setText("Zu wenig Daten – bitte wiederholen.")
