@@ -86,7 +86,7 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::beam::{Mode, SPEED_OF_SOUND};
+    use crate::beam::{Mode, Nulls, SPEED_OF_SOUND};
     use crate::stft::LATENCY;
     use std::f32::consts::PI;
     const SR: f32 = 48000.0;
@@ -94,7 +94,7 @@ mod tests {
     fn params(mode: Mode, az: f32, el: f32) -> Params {
         Params {
             geometry: Geometry::UMA8,
-            steering: Steering { azimuth_deg: az, elevation_deg: el, mode, min_wng_db: -3.0 },
+            steering: Steering { azimuth_deg: az, elevation_deg: el, mode, min_wng_db: -3.0, nulls: Nulls::OFF },
             dereverb: false,
             strength: 0.6,
             late_reverb: false,
@@ -185,6 +185,31 @@ mod tests {
                 assert!((y[n] - y[n - 1]).abs() <= max_step, "{mode:?}: Sprung bei n={n}");
             }
             assert_eq!(pl.beam.steering().mode, Mode::Omni, "Überblendung nicht abgeschlossen");
+        }
+    }
+
+    #[test]
+    fn null_change_is_click_free() {
+        // Sinus aus einer Richtung, deren Pegel sich mit den Nullstellen ändert
+        let len = 48000;
+        let x = plane_wave_sine(190.0, 5.0, 1000.0, len);
+        let mut p = params(Mode::Superdirective, 80.0, 30.0);
+        let mut pl = Pipeline::new(SR, &p);
+        let mut y = vec![0.0; len];
+        run(&mut pl, &x, 0, 12000, &mut y);
+        p.steering.nulls = Nulls { dirs: [[180.0, 5.0], [340.0, 5.0]], weight_db: 10.0 };
+        pl.set_params(&p);
+        run(&mut pl, &x, 12000, 30000, &mut y);
+        assert_eq!(pl.beam.steering().nulls, p.steering.nulls, "Überblendung nicht abgeschlossen");
+        p.steering.nulls.dirs[0] = [200.0, 0.0];
+        pl.set_params(&p);
+        run(&mut pl, &x, 30000, len, &mut y);
+        assert_eq!(pl.beam.steering().nulls, p.steering.nulls, "Überblendung nicht abgeschlossen");
+        let level = |a: usize, b: usize| rms(&y[a..b]);
+        assert!(level(24000, 30000) < 0.5 * level(6000, 12000), "Nullstelle wirkt nicht");
+        let max_step = 2.0 * PI * 1000.0 / SR * 1.07 * y[LATENCY..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        for n in (LATENCY + 100)..len {
+            assert!((y[n] - y[n - 1]).abs() <= max_step, "Sprung bei n={n}");
         }
     }
 

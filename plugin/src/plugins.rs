@@ -1,6 +1,6 @@
 //! Die LADSPA-Plugins der Bibliothek.
 
-use crate::beam::{Geometry, Mode, Steering, CHANNELS};
+use crate::beam::{Geometry, Mode, Nulls, Steering, CHANNELS, NULL_WEIGHT_MAX_DB};
 use crate::ladspa::*;
 use crate::limiter::Limiter;
 use crate::pipeline::{Params, Pipeline};
@@ -34,6 +34,8 @@ const DR_T60: usize = 24;
 const RAW_EXTRA: usize = 25;
 const LATE_REVERB: usize = 26;
 const MIN_WNG: usize = 27;
+const NULL1_AZIMUTH: usize = 28;
+const NULL_WEIGHT: usize = 32;
 
 pub struct BeamPlugin {
     pipeline: Pipeline,
@@ -78,12 +80,23 @@ impl Plugin for BeamPlugin {
         PortSpec::control("Raw Extra Delay (samples)", 0.0, 4800.0, HINT_INTEGER | HINT_DEFAULT_0),
         PortSpec::control("Late Reverb", 0.0, 1.0, HINT_TOGGLED | HINT_DEFAULT_1),
         PortSpec::control("Min WNG (dB)", MIN_WNG_LO, MIN_WNG_HI, HINT_DEFAULT_MIDDLE),
+        PortSpec::control("Null 1 Azimuth (deg)", 0.0, 360.0, HINT_DEFAULT_0),
+        PortSpec::control("Null 1 Elevation (deg)", 0.0, 90.0, HINT_DEFAULT_0),
+        PortSpec::control("Null 2 Azimuth (deg)", 0.0, 360.0, HINT_DEFAULT_0),
+        PortSpec::control("Null 2 Elevation (deg)", 0.0, 90.0, HINT_DEFAULT_0),
+        PortSpec::control("Null Weight (dB)", 0.0, NULL_WEIGHT_MAX_DB, HINT_DEFAULT_0),
     ];
 
     fn new(sample_rate: f32) -> Self {
         let params = Params {
             geometry: Geometry::UMA8,
-            steering: Steering { azimuth_deg: 0.0, elevation_deg: 0.0, mode: Mode::Superdirective, min_wng_db: -3.0 },
+            steering: Steering {
+                azimuth_deg: 0.0,
+                elevation_deg: 0.0,
+                mode: Mode::Superdirective,
+                min_wng_db: -3.0,
+                nulls: Nulls::OFF,
+            },
             dereverb: true,
             strength: 0.6,
             late_reverb: true,
@@ -114,6 +127,14 @@ impl Plugin for BeamPlugin {
                 elevation_deg: ports.control(ELEVATION, 0.0).clamp(0.0, 90.0),
                 mode: Mode::from_control(ports.control(MODE, 0.0).clamp(0.0, 2.0)),
                 min_wng_db: ports.control(MIN_WNG, -3.0).clamp(MIN_WNG_LO, MIN_WNG_HI),
+                // „Null Weight (dB)“ 0 = aus; Azimut/Elevation je Nullstelle wie die Blickrichtung
+                nulls: Nulls {
+                    dirs: std::array::from_fn(|i| {
+                        let az = NULL1_AZIMUTH + 2 * i;
+                        [ports.control(az, 0.0), ports.control(az + 1, 0.0).clamp(0.0, 90.0)]
+                    }),
+                    weight_db: ports.control(NULL_WEIGHT, 0.0).clamp(0.0, NULL_WEIGHT_MAX_DB),
+                },
             },
             dereverb: ports.control(DEREVERB, 1.0) >= 0.5,
             strength: ports.control(DR_STRENGTH, 0.6),
