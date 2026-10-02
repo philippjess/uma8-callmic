@@ -142,6 +142,22 @@ Out“ ist das Mittel-Mikrofon, um 1024 + „Raw Extra Delay“ verzögert.
   einem eigenen zyklischen Jacobi-Verfahren (f64) zerlegt. Danach sind WNG,
   dᴴ(Γ+μI)⁻¹d und der Richtwirkungsfaktor DI = 1/(wᴴΓw) O(7)-Summen über die
   Eigenwerte. Entwurf in f64, Gewichte in f32.
+- Nullstellen (optional, nur superdirektiv; Ports 28–32: „Null 1 Azimuth (deg)“,
+  „Null 1 Elevation (deg)“, „Null 2 Azimuth (deg)“, „Null 2 Elevation (deg)“,
+  „Null Weight (dB)“ 0–40, 0 = aus, empfohlen 10): feste Störrichtungen für
+  Lautsprecher. MVDR gegen R = Γ + β/5·Σ ddᴴ mit β = 10^(dB/10) − 1; jede
+  Nullstelle ist aus 5 Richtungen (Mitte, ±8° in Azimut und Elevation, je β/5)
+  aufgeweitet, damit Richtungsfehler der Messung (±5–10°) nicht ins Leere
+  laufen. β wird zwischen 4 und 6 kHz mit Kosinus ausgeblendet (darüber kosten
+  Nullstellen viel Richtwirkung, der Sprecher wird halliger, das Echo nicht
+  leiser). R ist komplex, Zerlegung per Jacobi wie Γ. Gleiche Richtungen
+  zählen einmal; ausgeschaltet bitgleich zur Ausgabe ohne Nullstellen.
+  Simulation (`tools/eval_nulls.py`, Lautsprecher ±100°, 5° Richtungsfehler,
+  ±1 dB Mikrofonstreuung, T60 0,45 s): Direktschall der Lautsprecher
+  −5/−11/−9 dB bei 1/2/4 kHz, Sprecher praktisch unverändert (nach den
+  Hallstufen ≤ 0,3 dB schlechter); das Gesamtecho sinkt aber nur um
+  0,3–1 dB, weil dort Reflexionen überwiegen – daher standardmäßig aus,
+  Nutzen an echten Aufnahmen prüfen.
 - Delay-and-Sum (w = d/7) bleibt zum A/B-Vergleich; „alle Richtungen“ ist das
   Mittel-Mikrofon allein.
 - Richtwirkungsindex gegen 3D-diffusen Schall (Az 0°, El 25°), in dB:
@@ -157,9 +173,16 @@ Out“ ist das Mittel-Mikrofon, um 1024 + „Raw Extra Delay“ verzögert.
   laufen parallel, ihre Ausgänge werden über 10 Frames (≈ 53 ms) mit
   Kosinus-Rampe übergeblendet. Kein Klick, keine Latenzänderung. Kommt während
   einer Überblendung ein neues Ziel, folgt danach die nächste. Ungültige
-  Geometrien werden ignoriert. Der Neuentwurf läuft allokationsfrei in `run()`:
-  Richtung, Modus oder WNG ≈ 0,13 ms, Kanalzuordnung oder Ringdrehung ≈ 0,5 ms,
-  neuer Radius ≈ 2,7 ms (Eigenzerlegung, nur nach der Geometrie-Prüfung).
+  Geometrien werden ignoriert. Der Neuentwurf läuft allokationsfrei in `run()`
+  und ist über mehrere Hops verteilt: Budget 512 Kosteneinheiten je Hop (Gewichte
+  eines Bins = 1, Eigenzerlegung eines Bins = 15, mit Nullstellen komplexe
+  Zerlegung = 30 je Bin bis 6 kHz); bis zum Abschluss gelten die alten Gewichte.
+  Der erste Frame nach `instantiate()` entwirft einmal synchron. Die Überblendung
+  beginnt bei Richtung, Modus, WNG oder Kanalzuordnung ≈ 2 Hops nach der
+  Änderung, bei neuem Radius ≈ 17 Hops (≈ 90 ms), bei neuen Nullstellen
+  ≈ 10 Hops plus Überblendung (≈ 0,11 s). Längster einzelner `run()` bei
+  480 Samples ≈ 0,4 ms für Radius- und Nullstellenwechsel (vorher 2,3–2,9 ms
+  auf einmal).
 
 **Hallunterdrückung, „Dereverb“** (`cdr.rs`): kohärenzbasierter Postfilter.
 
@@ -182,11 +205,19 @@ Out“ ist das Mittel-Mikrofon, um 1024 + „Raw Extra Delay“ verzögert.
   für rein diffusen Schall CDR ≈ 0,6 heraus; mal DI (bis ≈ 7) blieb diffuser
   Hall fast ungedämpft (−3,5 dB statt −20 dB). Abhilfe: Spektren und Γn
   zusätzlich über ±3 Bins (≈ 330 Hz) mitteln (N_eff ≈ 30, aus Frame- und
-  Bin-Korrelation des Fensters berechnet) und 1,2/√N_eff ≈ 0,22 vom CDR
-  abziehen. Ergebnis in Simulation: rein diffus CDR ≈ 0,03, Mischungen mit
-  CDR ≥ 1 nahezu erwartungstreu; stationärer diffuser Schall wird um 14 dB
-  (Stärke 0,6) bzw. 21 dB (Stärke 1) gedämpft. Kürzere Glättung (8–20 ms) dämpfte den Nachhall im
-  Raum-Test schlechter, längere (50–70 ms) brachte nichts.
+  Bin-Korrelation des Fensters berechnet) und je Mikrofonpaar die erwartete
+  Schätzrauschleistung (Carter) (1−|Γ̂|²)(2−|Γ̂|²)/(2·N_eff) von der Abweichung
+  Γ̂−Γn abziehen (Leistungssubtraktion, die Richtung bleibt), erst danach folgt
+  der Schwarz-Kellermann-Schätzer. Die Korrektur verschwindet bei kohärenten
+  Bins (|Γ̂| → 1); ein fester Abzug vom CDR (früher 1,2/√N_eff ≈ 0,22) drückte
+  dagegen auch Bins mit überwiegendem Direktschall auf die Untergrenze
+  (8–24 % in der Simulation). Überschätzung β = 1 bis Stärke 0,6, darüber
+  linear bis β = 3 bei Stärke 1 (tiefere Untergrenze, einzelne Fehl-Bins
+  fielen sonst als Musical Noise auf). Ergebnis in Simulation: rein diffus
+  CDR ≈ 0; Standardkette 0,9–2,6 % Direktschall-Bins an der Untergrenze (fester
+  Abzug: 3–6 %), Nachhallschwanz −37,5 statt −37,7 dB. Kürzere Glättung
+  (8–20 ms) dämpfte den Nachhall im Raum-Test schlechter, längere (50–70 ms)
+  brachte nichts.
 - Der Beam hat den diffusen Anteil bereits um DI gesenkt, am Ausgang gilt
   CDR·DI. Verstärkung G = max(1 − μ/(1 + CDR·DI), G_min) mit
   G_min = −25·s dB und μ = 1 + 0,5·s (s = „Dereverb Strength“; s = 0 lässt das
@@ -225,13 +256,18 @@ den Direktschall am Mittel-Mikrofon (höher = besser); Schwanz = Pegel
 | Mittel-Mikrofon | −1,1 | −22,4 | −3,4 | −16,0 |
 | Delay-and-Sum | −0,1 | −22,5 | −2,5 | −15,9 |
 | bisher: Delay-and-Sum + spät, 0,6 | 0,3 | −28,0 | −1,9 | −19,0 |
-| superdirektiv | 4,3 | −22,8 | 1,9 | −16,2 |
-| superdirektiv + Kohärenz, 0,6 | 4,4 | −31,1 | 2,4 | −24,8 |
-| **superdirektiv + Kohärenz + spät, 0,6 (Standard)** | **4,5** | **−37,7** | **2,7** | **−28,3** |
-| superdirektiv + Kohärenz + spät, 1,0 | 4,2 | −41,6 | 2,5 | −31,5 |
+| superdirektiv | 4,3 | −22,9 | 1,9 | −16,2 |
+| superdirektiv + Kohärenz, 0,6 | 4,5 | −30,9 | 2,4 | −24,5 |
+| **superdirektiv + Kohärenz + spät, 0,6 (Standard)** | **4,6** | **−37,5** | **2,8** | **−28,0** |
+| superdirektiv + Kohärenz + spät, 1,0 | 4,2 | −43,4 | 2,3 | −34,7 |
+
+Unkorreliertes Sensorrauschen am Ausgang relativ zu einem Mikrofon (dB, bei
+−35 dB Eigenrauschen je Mikrofon; niedriger = besser), Standardkette: 125 Hz–1 kHz
+−1,3…−1,5, 2 kHz −7,0, 4 kHz −17,2, 8 kHz −21,2 (nur superdirektiv: +2,9 unter
+1 kHz, −8 dB ab 4 kHz). Stärke 1,0: 2 kHz −12,4, 4 kHz −27,3, 8 kHz −33,9 dB.
 
 Mit 10° Azimut- und 10° Höhenfehler des Strahls verliert der Standard nur
-0,3–0,4 dB SI-SDR. Der Direktschall wird im Standard um ≈ 2,6–3,2 dB leiser,
+0,3 dB SI-SDR. Der Direktschall wird im Standard um ≈ 2,5–3,0 dB leiser,
 überwiegend unter 1 kHz (dort ist der Beam-Ausgang auch während der Sprache
 hallig); „Gain“ gleicht den Pegel aus. Gewählte Standards und Gründe:
 
@@ -239,26 +275,30 @@ hallig); „Gain“ gleicht den Pegel aus. Gewählte Standards und Gründe:
   besser, bei 0,5 dB Streuung (Standardabweichung) der Empfindlichkeit nur
   noch 0,2 dB, bei 1 dB Streuung ist −3 dB am besten (−6 und 0 dB je
   0,2–0,3 dB schlechter). MEMS-Toleranz ist typisch ±1 dB.
-- Stärke 0,6: von 0,3 bis 1,0 kostet jede Stufe nur wenig SI-SDR (0,4 dB
-  insgesamt) bei 9 dB weniger Schwanz; 0,6 ist die vorsichtige Mitte, weil
+- Stärke 0,6: von 0,3 bis 1,0 kostet jede Stufe nur wenig SI-SDR (0,5–0,6 dB
+  insgesamt) bei 11–12 dB weniger Schwanz; 0,6 ist die vorsichtige Mitte, weil
   Musical Noise in diesen Maßen nicht sichtbar ist. Mehr Wirkung: Regler
   „Stärke“.
-- Hallunterdrückung und später Nachhall standardmäßig an: zusammen 9–10 dB
-  weniger Schwanz als die bisherige Kette und +4,2–4,6 dB SI-SDR.
+- Hallunterdrückung und später Nachhall standardmäßig an: zusammen 9–9,5 dB
+  weniger Schwanz als die bisherige Kette und +4,3–4,7 dB SI-SDR.
 
 `tools/offline.py` verarbeitet eine echte 8-Kanal-Aufnahme
-(`pw-record --target <Raw-Quelle> --channels 8 --format f32 rec.wav`) mit den
+(`pw-record --target <Raw-Quelle> --channels 8 --channel-map FL,FR,FC,LFE,RL,RR,FLC,FRC --format f32 rec.wav`; ohne `--channel-map` nimmt pw-record 7.1 an, PipeWire mischt FLC/FRC in FL/FR und Kanal 6/7 bleiben stumm) mit den
 Einstellungen aus `config.toml` und einzeln überschreibbaren Werten zu einem
 Mono-WAV, für den Hörvergleich im eigenen Raum.
 
 **Echtzeitregeln:** keine Speicherallokation, keine Locks, keine
 Systemaufrufe in `run()`; alle Puffer werden in `instantiate()` angelegt,
 Neuentwürfe arbeiten auf vorhandenen Puffern. Geglättete Spektren unter
-10⁻³⁰ werden auf 0 gesetzt (keine Denormals). Nicht endliche Eingangswerte
-werden 0; läuft ein Frame bei absurd großen Werten über, wird er verworfen und
-die Schätzzustände zurückgesetzt, die Ausgabe bleibt NaN-frei. FFT über das
+10⁻³⁰ werden auf 0 gesetzt (keine Denormals), nicht endliche Schätzerzustände
+ebenfalls (ein ∞ bliebe sonst dauerhaft). Der Eingang wird in `Stft::push` auf
+±1000 begrenzt (Audio ist ±1, mit +24 dB Vorverstärkung ±16), nicht endliche
+Werte werden 0; so kann kein Schätzer überlaufen (ein einzelner riesiger Wert
+dämpfte vorher dauerhaft um 7,7 dB). Läuft ein Frame trotzdem über, wird er
+verworfen und die Schätzzustände zurückgesetzt, die Ausgabe bleibt NaN-frei. FFT über das
 Crate `realfft` mit vorab geplanten Instanzen. Rechenzeit (10 s Audio, ein
-Kern): superdirektiv 42 ms, mit beiden Hallstufen 90 ms (≈ 0,9 % CPU).
+Kern): Standardkette (superdirektiv, beide Hallstufen) ≈ 107 ms (≈ 1,1 % CPU); der Test
+`test_cpu_budget` verlangt den Bestwert aus drei Läufen ≤ 0,25 s.
 
 **`uma8_limit`** – 1 Eingang, 1 Ausgang.
 
@@ -736,7 +776,8 @@ Plugin, zwei Ebenen:
   diffus 3,5 dB stärker als direkt); Schwanz mindestens 8 dB (Kohärenz) bzw.
   14 dB (mit spätem Nachhall) leiser, Stoß höchstens 4 dB
 - Robustheit: Stille, Vollaussteuerung, NaN-freie Ausgabe, Blockgrößen 1–4096
-- CPU: Plugin verarbeitet 10 s Audio in < 0,2 s
+- CPU: Plugin verarbeitet 10 s Audio in ≤ 0,25 s (Bestwert aus drei Läufen), auch mit Nullstellen, die alle 0,5 s verschoben werden
+- Robustheit der Verteilung: Neuentwurf je `run()` begrenzt, Eingangsbegrenzung ±1000 und nicht endliche Eingänge ohne dauerhafte Dämpfung
 
 Python (pytest):
 
