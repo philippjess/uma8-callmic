@@ -230,8 +230,16 @@ def test_tracking_follows_echo_cancel(monkeypatch):
     """Mit Echounterdrückung hört die Nachführung auf deren Ausgang (7 Mikrofone), sonst auf das Gerät (8 Kanäle)."""
     monkeypatch.setattr(pwctl, "raw_source", lambda: "raw.9")
     assert pwctl.tracking_target(True) == ("uma8_callmic_aec", 7, tuple(f"AUX{i}" for i in range(7)))
-    assert pwctl.tracking_target(False) == ("raw.9", 8, ("FL", "FR", "FC", "LFE", "RL", "RR", "FLC", "FRC"))
+    assert pwctl.tracking_target(False) == ("raw.9", 8, ("FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR"))
     assert pwctl.raw_target() == pwctl.tracking_target(False)
+
+
+def test_raw_positions_exist_in_the_device_node():
+    """Nur Positionen, die der Knoten hat (ACP analog-surround-71), kommen 1:1 an; FLC/FRC aus der
+    USB-Belegung ließen Kanal 6 stumm und mischten ihn in Kanal 4 (am Gerät gemessen)."""
+    acp_surround71 = {"FL", "FR", "RL", "RR", "FC", "LFE", "SL", "SR"}
+    assert set(pwctl.K.RAW_POSITIONS) == acp_surround71 and len(pwctl.K.RAW_POSITIONS) == 8
+    assert pwctl.K.RAW_POSITIONS[:6] == ("FL", "FR", "FC", "LFE", "RL", "RR")
 
 
 def test_restart_chain_only_restarts_running_service(monkeypatch):

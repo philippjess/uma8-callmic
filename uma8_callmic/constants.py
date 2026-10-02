@@ -5,8 +5,11 @@ from pathlib import Path
 
 SAMPLE_RATE = 48000
 RAW_DEVICE = "alsa_input.usb-miniDSP_micArray_RAW_SPK-00.analog-surround-71"
-#: Kanalpositionen der Raw-Quelle; Kanal 0–6 = Mikrofone, Kanal 7 = freier PDM-Eingang
-RAW_POSITIONS = ("FL", "FR", "FC", "LFE", "RL", "RR", "FLC", "FRC")
+#: Kanalpositionen der Raw-Quelle in Gerätereihenfolge; Kanal 0–6 = Mikrofone, Kanal 7 = freier PDM-Eingang.
+#: Namen wie im PipeWire-Knoten (ACP-Profil analog-surround-71: SL/SR), nicht wie in der USB-Kanalbelegung
+#: (FLC/FRC): Positionen, die der Knoten nicht hat, mischt PipeWire um (am Gerät gemessen: Kanal 6 kam stumm an
+#: und landete in Kanal 4). FC/LFE/RL/RR stimmen, weil ALSAs surround71 die USB-Reihenfolge umsortiert.
+RAW_POSITIONS = ("FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR")
 MICS = 7
 #: Kanalpositionen der 7 Mikrofonkanäle hinter der Vorverstärkung (Echounterdrückung, Hauptkette)
 MIC_POSITIONS = tuple(f"AUX{i}" for i in range(MICS))

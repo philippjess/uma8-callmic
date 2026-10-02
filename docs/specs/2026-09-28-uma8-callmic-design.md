@@ -30,6 +30,7 @@ Erfolgskriterien:
 | USB | `2752:001d`, „micArray RAW SPK“ |
 | Aufnahme | 8 Kanäle, S32_LE (24 Bit), 11,025–48 kHz; Kanal 0–6 = MEMS, Kanal 7 = freier PDM-Eingang (stumm) |
 | PipeWire-Quelle | `alsa_input.usb-miniDSP_micArray_RAW_SPK-00.analog-surround-71` |
+| Kanalpositionen | in Gerätereihenfolge `FL FR FC LFE RL RR SL SR` (Knoten: `FL FR RL RR FC LFE SL SR`, ACP). Die USB-Belegung nennt Kanal 6/7 `FLC FRC`; diese Namen hat der Knoten nicht, PipeWire würde Kanal 6 stumm liefern und in Kanal 4 mischen |
 | Pegel | sehr leise, ca. −75 dBFS Raumrauschen (keine Verstärkung im Chip) |
 | Geometrie | 1 Mikrofon mittig, 6 im Kreis; Radius laut Platinengröße ca. 43 mm, wird beim Einrichten per Kohärenz-Fit überprüft |
 
@@ -283,7 +284,7 @@ hallig); „Gain“ gleicht den Pegel aus. Gewählte Standards und Gründe:
   weniger Schwanz als die bisherige Kette und +4,3–4,7 dB SI-SDR.
 
 `tools/offline.py` verarbeitet eine echte 8-Kanal-Aufnahme
-(`pw-record --target <Raw-Quelle> --channels 8 --channel-map FL,FR,FC,LFE,RL,RR,FLC,FRC --format f32 rec.wav`; ohne `--channel-map` nimmt pw-record 7.1 an, PipeWire mischt FLC/FRC in FL/FR und Kanal 6/7 bleiben stumm) mit den
+(`pw-record --target <Raw-Quelle> --channels 8 --channel-map FL,FR,FC,LFE,RL,RR,SL,SR --format f32 rec.wav`) mit den
 Einstellungen aus `config.toml` und einzeln überschreibbaren Werten zu einem
 Mono-WAV, für den Hörvergleich im eigenen Raum.
 
@@ -544,7 +545,7 @@ Module:
 | `params.py` | Abbildung Einstellungen → Plugin-Controls (für Konfiguration und Live-Änderungen) |
 | `constants.py` | Pfade, Knotennamen, gemessene Latenzen |
 | `pwctl.py` | PipeWire-Anbindung über `pw-dump`/`pw-cli`/`systemctl --user`: Zustand lesen, Parameter setzen, Dienst steuern |
-| `capture.py` | Mehrkanal-Aufnahme über einen `pw-record`-Unterprozess (float32, 48 kHz), Ringpuffer. Immer mit den Kanalpositionen der Quelle (`--channel-map`): pw-record nähme sonst 7.1 bzw. 7.0, und PipeWire mischte um (gemessen: FLC/FRC landeten in FL/FR, Kanal 6/7 blieben stumm; an der AEC-Quelle kamen nur AUX0/1 an). Ohne Ausweichen aufs Standardmikrofon (`node.dont-fallback`): fehlt die Quelle, endet die Aufnahme |
+| `capture.py` | Mehrkanal-Aufnahme über einen `pw-record`-Unterprozess (float32, 48 kHz), Ringpuffer. Immer mit den Kanalpositionen der Quelle (`--channel-map`): pw-record nähme sonst ein Standardlayout, und PipeWire mischte um (gemessen: an der AEC-Quelle kamen nur AUX0/1 an). Ohne Ausweichen aufs Standardmikrofon (`node.dont-fallback`): fehlt die Quelle, endet die Aufnahme |
 | `doa.py` | Richtungsschätzung: SRP-PHAT über 72 Azimuth- × 4 Elevationswerte, Sprachaktivitätserkennung (Energie + spektrale Flachheit) |
 | `geometry.py` | Kanalzuordnung und Radius aus Raumrauschen: Kohärenzmatrix, Mittel-Mikrofon = höchste mittlere Kohärenz, Ringreihenfolge und Radius per Fit an sinc(k·d) |
 | `reflink.py` | Echo-Referenz nur während einer Aufnahme verbinden (`uma8-callmic --ref-linker`, gestartet per `context.exec` der Kette): `pw-dump --monitor` lesen, Monitor der Standardausgabe per `pw-link` verbinden/trennen; Entscheidungslogik ohne PipeWire testbar |

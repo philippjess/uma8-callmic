@@ -20,8 +20,8 @@ def test_capture_reads_frames_from_command():
 
 
 def test_record_command_sets_channel_map_and_no_fallback():
-    """Ohne Kanalpositionen nähme pw-record 7.1 bzw. 7.0 und PipeWire mischte um (live geprüft:
-    FLC/FRC landeten in FL/FR, AUX2–6 blieben stumm)."""
+    """Ohne Kanalpositionen nähme pw-record 7.0 und PipeWire mischte um (live geprüft an der AEC-Quelle:
+    nur AUX0/1 kamen an)."""
     cmd = record_command("uma8_callmic_aec", 7, positions=tuple(f"AUX{i}" for i in range(7)), no_fallback=True)
     assert cmd[:3] == ["pw-record", "--target", "uma8_callmic_aec"]
     assert cmd[cmd.index("--channels") + 1] == "7"
