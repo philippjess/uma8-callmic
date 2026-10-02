@@ -139,10 +139,15 @@ def test_keyboard_direction_from_typing():
 def test_sweep_end_to_end_with_simulated_playback(tmp_path):
     clock = Clock()
     cap = SceneCapture(clock, P, sources=[(100.0, 5.0), (260.0, 5.0)])
-    sweep = ws.SpeakerSweep(cap, ws.write_bursts(tmp_path), P, player=cap.play)
+    dump = tmp_path / "state" / "messung.npz"
+    sweep = ws.SpeakerSweep(cap, ws.write_bursts(tmp_path), P, player=cap.play, dump=dump)
     texts = set()
     run_sweep(sweep, clock, tick=lambda t: (sweep.step(t), texts.add(sweep.status())))
     assert sweep.error is None and cap.played == [0, 1]
+    saved = np.load(dump)  # Rohaufnahme zum Nachrechnen: dieselbe Auswertung ergibt dieselben Richtungen
+    again = ws.analyse_speakers(saved["block"], [tuple(b) for b in saved["bursts"]], tuple(saved["noise"]), P)
+    assert saved["block"].shape[1] == 7 and int(saved["sr"]) == SR
+    assert np.allclose(again.directions, sweep.result.directions, atol=0.5)
     assert [angle_diff(d[0], az) <= 1.0 for d, az in zip(sweep.result.directions, (100.0, 260.0))] == [True, True]
     assert any("Grundrauschen" in t for t in texts) and any("links" in t for t in texts)
     assert any("rechts" in t for t in texts) and sweep.progress() == 1.0
@@ -218,3 +223,32 @@ def test_live_analysis_speech_noise_and_map():
         live.feed(noise() + talk)
     assert abs(live.speech_dbfs() - ws.band_level_dbfs(talk[:, 0])) < 1.0
     assert live.activity() == 1.0 and live.map_norm().max() == 1.0
+
+
+def _measured(left_ok: bool, right_ok: bool = True) -> ws.SpeakerMeasurement:
+    left = ws.Direction(left_ok, "links", 170.0, 40.0, 0.2 if left_ok else 0.04, -79.0)
+    right = ws.Direction(right_ok, "rechts", 10.0, 35.0, 0.17, -78.0)
+    good = [r for r in (left, right) if r.ok]
+    return ws.SpeakerMeasurement([left, right], -92.0, [[r.azimuth, r.elevation] for r in good],
+                                 [r.level_dbfs for r in good])
+
+
+def test_failed_channel_keeps_known_speaker():
+    """Neu messen, links unsicher: Der linke Lautsprecher fiele sonst still aus Profil, Sprechzone und Nullstellen."""
+    m = ws.keep_known_speakers(_measured(False), [[174.5, 45.0], [8.8, 35.0]], [-79.8, -77.6])
+    assert m.directions == [[174.5, 45.0], [10.0, 35.0]]               # Reihenfolge links, rechts bleibt
+    assert m.levels_dbfs == [-79.0, -78.0]                              # neuer Pegel, nur die Richtung war unsicher
+    assert any("174° bleibt" in n for n in m.notes)
+    no_level = _measured(False)
+    no_level.speakers[0].level_dbfs = None                              # am Mikrofon nichts zu hören
+    assert ws.keep_known_speakers(no_level, [[174.5, 45.0], [8.8, 35.0]], [-79.8, -77.6]).levels_dbfs[0] == -79.8
+
+
+def test_complete_or_unmatched_measurements_stay_as_measured():
+    full = _measured(True)
+    assert ws.keep_known_speakers(full, [[174.5, 45.0], [8.8, 35.0]], [-79.8, -77.6]) is full
+    partial = _measured(False)
+    for old in ([], [[90.0, 10.0]]):                                    # Profil kennt die Kanäle nicht getrennt
+        assert ws.keep_known_speakers(partial, old, [-80.0] * len(old)) is partial
+    none = _measured(False, False)
+    assert ws.keep_known_speakers(none, [[174.5, 45.0], [8.8, 35.0]], [-79.8, -77.6]) is none

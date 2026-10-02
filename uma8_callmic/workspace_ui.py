@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout, QHBoxLayout, QLa
                                QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import beampattern, pwctl
+from . import constants as K
 from . import workspace as ws
 from .capture import open_capture
 from .config import Config, profile_defaults
@@ -268,7 +269,7 @@ class SweepRunner:
         if capture is None:
             capture = self.own = self.capture_factory(12.0)
         self.sweep = ws.SpeakerSweep(capture, files, self.cfg.geometry().positions(), self.cfg.center_channel,
-                                     self.player)
+                                     self.player, dump=K.STATE_DIR / "lautsprechermessung.npz")
         self.timer.start(100)
 
     def tick(self, now: float) -> None:
@@ -507,8 +508,8 @@ class WorkspaceWizard(QDialog):
 
     def _sweep_done(self, sweep: ws.SpeakerSweep) -> None:
         if sweep.result is not None and sweep.result.ok:
-            self.speakers = sweep.result
-            self.sweep_info.setText(speaker_summary(sweep.result))
+            self.speakers = ws.keep_known_speakers(sweep.result, self.cfg.speakers, self.cfg.speaker_levels_dbfs)
+            self.sweep_info.setText(speaker_summary(self.speakers))
         else:
             self.sweep_info.setText(sweep.error or "Messung fehlgeschlagen.")
         self.measure_btn.setText("Wiederholen")
@@ -810,8 +811,9 @@ class PlacementWindow(QDialog):
         self.progress.setVisible(False)
         self.measure_btn.setEnabled(True)
         if sweep.result is not None and sweep.result.ok:
-            self.pending = sweep.result
-            self.result.setText(speaker_summary(sweep.result) + "\n(neu, noch nicht übernommen)")
+            cfg, _ = self.state()
+            self.pending = ws.keep_known_speakers(sweep.result, cfg.speakers, cfg.speaker_levels_dbfs)
+            self.result.setText(speaker_summary(self.pending) + "\n(neu, noch nicht übernommen)")
             self.adopt_btn.setVisible(True)
             self.pattern_key = None
         else:

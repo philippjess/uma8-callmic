@@ -295,6 +295,29 @@ def profile_notes(talker_azimuth: float | None, directions: list[list[float]], k
 
 # --- Ablauf der Lautsprechermessung -------------------------------------------
 
+def keep_known_speakers(m: SpeakerMeasurement, old_dirs: list[list[float]],
+                        old_levels: list[float]) -> SpeakerMeasurement:
+    """Neue Messung, in der ein Kanal scheiterte: Dessen bisherige Richtung bleibt im Profil (sonst fiele der
+    Lautsprecher still aus Sprechzone und Nullstellen). Nur wenn das Profil beide Kanäle getrennt kennt
+    (Reihenfolge links, rechts); der neu gemessene Pegel des Kanals gilt, falls es einen gibt."""
+    if not m.ok or all(r.ok for r in m.speakers) or len(old_dirs) != 2 or len(m.speakers) != 2:
+        return m
+    dirs, levels, notes = [], [], list(m.notes)
+    for i, (r, name) in enumerate(zip(m.speakers, CHANNEL_NAMES)):
+        if r.ok:
+            dirs.append([r.azimuth, r.elevation])
+            levels.append(r.level_dbfs)
+            continue
+        dirs.append([float(old_dirs[i][0]), float(old_dirs[i][1])])
+        old = old_levels[i] if len(old_levels) == 2 else None
+        level = r.level_dbfs if r.level_dbfs is not None else old
+        if level is None:  # weder neu noch bisher ein Pegel: Kanal kann nicht bleiben
+            return m
+        levels.append(level)
+        notes.append(f"Lautsprecher {name}: bisherige Richtung {old_dirs[i][0]:.0f}° bleibt.")
+    return SpeakerMeasurement(m.speakers, m.noise_dbfs, dirs, levels, notes)
+
+
 class SpeakerSweep:
     """Vorlauf (Grundrauschen) → je Datei Rauschstoß über `player` → Pause → Auswertung. Ohne GUI und ohne
     eigene Uhr: `step(now)` regelmäßig aufrufen (alle ≈ 0,1 s), bis `done`.
@@ -305,9 +328,10 @@ class SpeakerSweep:
     PLAY_TIMEOUT_S = BURST_S + 6.0
 
     def __init__(self, capture, files: list[Path], positions: np.ndarray, center: int = 0,
-                 player: Callable[[Path], object] = start_player, sr: int = SR):
+                 player: Callable[[Path], object] = start_player, sr: int = SR, dump: Path | None = None):
         self.capture, self.files, self.positions, self.center = capture, list(files), positions, center
-        self.player, self.sr = player, sr
+        #: Rohaufnahme samt Stoß- und Rauschbereichen hierhin (.npz), um eine Messung nachträglich auszuwerten
+        self.player, self.sr, self.dump = player, sr, dump
         self.phase, self.index = "preroll", 0
         self.t0: float | None = None
         self.t_phase = 0.0
@@ -390,6 +414,13 @@ class SpeakerSweep:
             self._fail("Aufnahme unvollständig – bitte wiederholen.")
             return
         rel = [(s - start, e - start) for s, e in self.bursts]
+        if self.dump is not None:
+            try:
+                self.dump.parent.mkdir(parents=True, exist_ok=True)
+                np.savez(self.dump, block=np.asarray(block[:, :7], np.float32), bursts=np.array(rel),
+                         noise=np.array([0, self.noise[1] - start]), sr=self.sr)
+            except OSError:
+                pass  # nur zur Fehlersuche
         self.result = analyse_speakers(block, rel, (0, self.noise[1] - start), self.positions, self.center, self.sr)
         if not self.result.ok:
             self.error = "\n".join(r.message for r in self.result.speakers)
