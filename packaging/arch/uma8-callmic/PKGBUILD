@@ -1,0 +1,75 @@
+# Maintainer: Philipp <philipp@rootshell.dev>
+# Baut direkt aus dem Repo-Checkout, in dem dieses PKGBUILD liegt: im Repo `cd packaging/arch/uma8-callmic && makepkg -si`
+# (oder alles in einem sauberen Container: packaging/build-arch.sh). Es gibt bewusst kein source=(): Quellen sind
+# der Arbeitsbaum selbst (auch ungesicherte Änderungen), kein Tarball, der erst erzeugt und hochgeladen werden müsste.
+# prepare() kopiert den Baum nach $srcdir, damit Cargo-target/ und build/ den Checkout nicht füllen.
+pkgname=uma8-callmic
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Call-Mikrofon für das miniDSP UMA-8 unter PipeWire: Beamforming, Hallunterdrückung, DeepFilterNet, Tray'
+arch=(x86_64 aarch64)
+url='https://github.com/willheisenberg/uma8-callmic'
+# Das Projekt hat noch keine Lizenz festgelegt (Platzhalter); statisch gelinktes realfft-Crate und Abhängigkeiten: MIT bzw. MIT OR Apache-2.0
+license=('LicenseRef-Unknown')
+depends=(
+  'pipewire>=1:1.2.0' # pipewire, pw-cli, pw-dump; ab 1.2.0 nimmt context.exec Argumente als Array (Echo-Referenz-Helfer)
+  pipewire-audio      # pw-record, libspa-aec-webrtc.so (SPA-AEC)
+  libpipewire         # libpipewire-module-echo-cancel.so
+  libpulse            # pactl
+  pyside6             # Python-Bindings für Qt6 (python-pyside6 gibt es auf Arch nicht)
+  python
+  python-numpy
+  glibc
+  libdeep_filter_ladspa  # deepfilternet-ladspa (dieses Repo) oder AUR deepfilternet-plugin-pipewire-bin
+  hicolor-icon-theme
+)
+makedepends=(rust python-build python-installer python-setuptools python-wheel desktop-file-utils)
+checkdepends=(python-pytest python-scipy)
+options=(!lto)
+
+_repo="$startdir/../../.."
+
+prepare() {
+  rm -rf "$srcdir/$pkgname"
+  mkdir -p "$srcdir/$pkgname"
+  # Whitelist statt Ausschlussliste: keine Firmware, Docs, target/, packaging/out (tools/roomsim.py brauchen die Tests,
+  # plugin/tests und plugin/examples baut cargo test mit)
+  tar -C "$_repo" --exclude=__pycache__ -cf - uma8_callmic plugin/Cargo.toml plugin/Cargo.lock plugin/src plugin/tests \
+      plugin/examples pipewire tests tools pyproject.toml README.md | tar -C "$srcdir/$pkgname" -xf -
+  cd "$srcdir/$pkgname/plugin"
+  export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  (cd plugin && cargo build --frozen --release --all-features)
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "$srcdir/$pkgname"
+  grep -qx 'ExecStartPre=@BIN@ --write-config' pipewire/uma8-callmic-chain.service
+  (cd plugin && cargo test --frozen --release)
+  # tests/conftest.py baut plugin/ selbst (cargo build --release, offline aus dem Cache von prepare()). Ohne die
+  # Rechenzeit-Tests (Marker timing): Bauhosts können beliebig langsam oder ausgelastet sein
+  CARGO_NET_OFFLINE=true QT_QPA_PLATFORM=offscreen python -m pytest -q -m 'not integration and not hardware and not timing'
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  # Der Installer schreibt den Interpreter aus dem PATH des Bauenden (z. B. /usr/sbin/python): fest /usr/bin/python
+  sed -i '1s|^#!.*python.*$|#!/usr/bin/python|' "$pkgdir/usr/bin/uma8-callmic"
+  install -Dm755 plugin/target/release/libuma8_beam.so "$pkgdir/usr/lib/ladspa/libuma8_beam.so"
+  install -Dm644 pipewire/uma8-callmic-chain.service "$pkgdir/usr/lib/systemd/user/uma8-callmic-chain.service"
+  sed -i 's|@BIN@|/usr/bin/uma8-callmic|' "$pkgdir/usr/lib/systemd/user/uma8-callmic-chain.service"
+  install -Dm644 uma8_callmic/data/uma8-callmic.desktop "$pkgdir/usr/share/applications/uma8-callmic.desktop"
+  sed -i 's|^Exec=@BIN@$|Exec=uma8-callmic|' "$pkgdir/usr/share/applications/uma8-callmic.desktop"
+  desktop-file-validate "$pkgdir/usr/share/applications/uma8-callmic.desktop"
+  # Lizenzhinweis (Projekt hat noch keine Lizenz) und Lizenzen der statisch gelinkten Crates
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/licenses/$pkgname/LICENSE" <<< 'Das Projekt uma8-callmic hat noch keine Lizenz festgelegt (LicenseRef-Unknown). Lizenzen der statisch gelinkten Crates: LICENSE.dependencies.'
+  (cd plugin && cargo tree --frozen --edges no-build,no-dev,no-proc-macro --prefix none --format '{l}: {p}' | sed 's/ (.*)$//' | sort -u) \
+    | install -Dm644 /dev/stdin "$pkgdir/usr/share/licenses/$pkgname/LICENSE.dependencies"
+  install -Dm644 uma8_callmic/icons/active.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/uma8-callmic.svg"
+}

@@ -1,34 +1,22 @@
-//! Unterdrückung des späten Nachhalls (Lebart/Habets) in der STFT-Domäne.
-//! Deaktiviert ist die Verstärkung 1: exakte Rekonstruktion mit fester Latenz.
+//! Unterdrückung des späten Nachhalls (Lebart/Habets) am Beam-Ausgang: PSD des späten Nachhalls
+//! aus dem exponentiellen Abklingmodell (T60), Wiener-artige Verstärkung mit Untergrenze aus
+//! „Strength“, zeitliche Glättung gegen Musical Noise. Deaktiviert läuft die Verstärkung auf 1.
 
-use realfft::{num_complex::Complex, ComplexToReal, RealFftPlanner, RealToComplex};
-use std::sync::Arc;
+use crate::stft::{BINS, C32, HOP};
 
-pub const FFT_LEN: usize = 1024;
-pub const HOP: usize = 256;
-/// Latenz in Samples, unabhängig davon, ob die Unterdrückung aktiv ist.
-pub const LATENCY: usize = FFT_LEN;
-const BINS: usize = FFT_LEN / 2 + 1;
-const LATE_ONSET_S: f32 = 0.05;
+/// Ab hier gilt Schall als später Nachhall. 50 ms ließen die ersten ≈ 60 ms jedes Ausklangs unberührt
+/// und schnitten dann steil ab (im Raum hörbar als „abgehackter“ Hall); 25 ms klingen gleichmäßiger.
+const LATE_ONSET_S: f32 = 0.025;
 const MAX_ONSET_FRAMES: usize = 32;
 const PSD_SMOOTH: f32 = 0.8;
 const GAIN_SMOOTH: f32 = 0.5;
-const MAX_ATTENUATION_DB: f32 = 15.0;
+/// Größte Dämpfung bei Stärke 1 (0,6 → 15 dB). 15 dB ließen bei lauter Sprache hörbaren Hall stehen;
+/// 25 dB ohne Musical Noise im Hörvergleich.
+const MAX_ATTENUATION_DB: f32 = 25.0;
+const EPS: f32 = 1e-30;
 
-pub struct Dereverb {
+pub struct LateReverb {
     sample_rate: f32,
-    r2c: Arc<dyn RealToComplex<f32>>,
-    c2r: Arc<dyn ComplexToReal<f32>>,
-    window: Vec<f32>,
-    input: Vec<f32>,
-    in_pos: usize,
-    hop_count: usize,
-    output: Vec<f32>,
-    time: usize,
-    frame: Vec<f32>,
-    spectrum: Vec<Complex<f32>>,
-    scratch_fwd: Vec<Complex<f32>>,
-    scratch_inv: Vec<Complex<f32>>,
     psd: Vec<f32>,
     psd_hist: Vec<Vec<f32>>,
     hist_pos: usize,
@@ -39,33 +27,14 @@ pub struct Dereverb {
     t60: f32,
 }
 
-impl Dereverb {
+impl LateReverb {
     pub fn new(sample_rate: f32) -> Self {
-        let mut planner = RealFftPlanner::<f32>::new();
-        let r2c = planner.plan_fft_forward(FFT_LEN);
-        let c2r = planner.plan_fft_inverse(FFT_LEN);
-        // Wurzel-Hann (periodisch): Analyse und Synthese zusammen ergeben Hann,
-        // bei 75 % Überlappung summiert sich Hann zu 2.
-        let window = (0..FFT_LEN).map(|j| (std::f32::consts::PI * j as f32 / FFT_LEN as f32).sin()).collect();
-        let onset_frames = ((LATE_ONSET_S * sample_rate / HOP as f32).round() as usize).clamp(1, MAX_ONSET_FRAMES);
-        Dereverb {
+        LateReverb {
             sample_rate,
-            scratch_fwd: r2c.make_scratch_vec(),
-            scratch_inv: c2r.make_scratch_vec(),
-            spectrum: r2c.make_output_vec(),
-            r2c,
-            c2r,
-            window,
-            input: vec![0.0; FFT_LEN],
-            in_pos: 0,
-            hop_count: 0,
-            output: vec![0.0; 2 * FFT_LEN],
-            time: FFT_LEN,
-            frame: vec![0.0; FFT_LEN],
             psd: vec![0.0; BINS],
             psd_hist: vec![vec![0.0; BINS]; MAX_ONSET_FRAMES + 1],
             hist_pos: 0,
-            onset_frames,
+            onset_frames: ((LATE_ONSET_S * sample_rate / HOP as f32).round() as usize).clamp(1, MAX_ONSET_FRAMES),
             gain: vec![1.0; BINS],
             enabled: false,
             strength: 0.6,
@@ -79,30 +48,16 @@ impl Dereverb {
         self.t60 = t60.clamp(0.1, 1.5);
     }
 
-    pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
-        let ring = self.output.len();
-        for (x, y) in input.iter().zip(output.iter_mut()) {
-            self.input[self.in_pos] = *x;
-            self.in_pos = (self.in_pos + 1) % FFT_LEN;
-            self.hop_count += 1;
-            if self.hop_count == HOP {
-                self.hop_count = 0;
-                self.process_frame();
-            }
-            // Alle Frames, die Zeitpunkt time − FFT_LEN abdecken, sind fertig.
-            let idx = (self.time - FFT_LEN) % ring;
-            *y = self.output[idx];
-            self.output[idx] = 0.0;
-            self.time += 1;
+    pub fn reset(&mut self) {
+        self.psd.fill(0.0);
+        for h in self.psd_hist.iter_mut() {
+            h.fill(0.0);
         }
+        self.gain.fill(1.0);
     }
 
-    fn process_frame(&mut self) {
-        for j in 0..FFT_LEN {
-            self.frame[j] = self.input[(self.in_pos + j) % FFT_LEN] * self.window[j];
-        }
-        let _ = self.r2c.process_with_scratch(&mut self.frame, &mut self.spectrum, &mut self.scratch_fwd);
-
+    /// Aktualisiert das Modell mit dem Spektrum `y` und liefert die Verstärkung je Bin.
+    pub fn gains(&mut self, y: &[C32]) -> &[f32] {
         let delta = 3.0 * std::f32::consts::LN_10 / self.t60;
         let decay = (-2.0 * delta * (self.onset_frames * HOP) as f32 / self.sample_rate).exp();
         let slots = MAX_ONSET_FRAMES + 1;
@@ -110,35 +65,25 @@ impl Dereverb {
         let old = (self.hist_pos + 1 + slots - self.onset_frames) % slots;
         let floor = 10f32.powf(-self.strength * MAX_ATTENUATION_DB / 20.0);
         for k in 0..BINS {
-            let power = self.spectrum[k].norm_sqr();
-            self.psd[k] = PSD_SMOOTH * self.psd[k] + (1.0 - PSD_SMOOTH) * power;
+            let psd = PSD_SMOOTH * self.psd[k] + (1.0 - PSD_SMOOTH) * y[k].norm_sqr();
+            // Denormals und (nach der Eingangsbegrenzung eigentlich unmöglich) ∞/NaN verwerfen,
+            // sonst bliebe die Verstärkung für immer an der Untergrenze.
+            self.psd[k] = if psd >= EPS && psd.is_finite() { psd } else { 0.0 };
             let late = decay * self.psd_hist[old][k];
-            let target = if self.enabled {
-                (1.0 - late / (self.psd[k] + 1e-12)).max(0.0).sqrt().max(floor)
-            } else {
-                1.0
-            };
+            let target = if self.enabled { (1.0 - late / (self.psd[k] + EPS)).max(0.0).sqrt().max(floor) } else { 1.0 };
             self.gain[k] = GAIN_SMOOTH * self.gain[k] + (1.0 - GAIN_SMOOTH) * target;
-            self.spectrum[k] *= self.gain[k];
         }
         self.hist_pos = (self.hist_pos + 1) % slots;
         self.psd_hist[self.hist_pos].copy_from_slice(&self.psd);
-
-        self.spectrum[0].im = 0.0;
-        self.spectrum[BINS - 1].im = 0.0;
-        let _ = self.c2r.process_with_scratch(&mut self.spectrum, &mut self.frame, &mut self.scratch_inv);
-        let ring = self.output.len();
-        let scale = 0.5 / FFT_LEN as f32;
-        let start = self.time + 1 - FFT_LEN;
-        for j in 0..FFT_LEN {
-            self.output[(start + j) % ring] += self.frame[j] * self.window[j] * scale;
-        }
+        &self.gain
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stft::{Stft, LATENCY};
+    use realfft::RealFftPlanner;
     const SR: f32 = 48000.0;
 
     fn noise(len: usize, seed: u32) -> Vec<f32> {
@@ -177,13 +122,29 @@ mod tests {
         x.iter().map(|v| v * v).sum()
     }
 
+    fn run(d: &mut LateReverb, x: &[f32]) -> Vec<f32> {
+        let mut stft = Stft::new(1);
+        let mut y = vec![0.0; x.len()];
+        for n in 0..x.len() {
+            if stft.push(|_| x[n]) {
+                stft.analyze();
+                let g = d.gains(&stft.spectra[0]);
+                for k in 0..BINS {
+                    stft.out[k] = stft.spectra[0][k] * g[k];
+                }
+                stft.synthesize();
+            }
+            y[n] = stft.pop();
+        }
+        y
+    }
+
     #[test]
     fn disabled_is_exact_delay() {
-        let mut d = Dereverb::new(SR);
+        let mut d = LateReverb::new(SR);
         d.set_params(false, 1.0, 0.5);
         let x = noise(20000, 1);
-        let mut y = vec![0.0; x.len()];
-        d.process(&x, &mut y);
+        let y = run(&mut d, &x);
         for n in LATENCY..x.len() {
             assert!((y[n] - x[n - LATENCY]).abs() < 1e-4, "n={n}");
         }
@@ -203,18 +164,39 @@ mod tests {
         ir[0] = 1.0;
         let wet = convolve(&dry, &ir);
 
-        let mut d = Dereverb::new(SR);
+        let mut d = LateReverb::new(SR);
         d.set_params(true, 1.0, t60);
-        let mut y = vec![0.0; len];
-        d.process(&wet, &mut y);
+        let y = run(&mut d, &wet);
         let aligned = |a: usize, b: usize| energy(&y[a + LATENCY..b + LATENCY]);
 
         let (t0, t1) = (burst + (0.1 * SR) as usize, burst + (0.6 * SR) as usize);
         let tail_db = 10.0 * (energy(&wet[t0..t1]) / aligned(t0, t1)).log10();
-        assert!(tail_db >= 6.0, "Nachhall nur um {tail_db} dB reduziert");
+        assert!(tail_db >= 8.5, "Nachhall nur um {tail_db} dB reduziert");
 
         let (b0, b1) = ((0.1 * SR) as usize, burst);
         let direct_db = 10.0 * (energy(&wet[b0..b1]) / aligned(b0, b1)).log10();
-        assert!(direct_db <= 3.0, "Direktschall um {direct_db} dB gedämpft");
+        // Einsatz nach 25 ms dämpft auch Gleichbleibendes (hier 3,1 dB, mit 50 ms 1,6 dB; echte Sprache
+        // gemessen 1 dB mehr als mit 50 ms). Im Hörvergleich klang der Nachhall so weniger abgehackt.
+        assert!(direct_db <= 3.5, "Direktschall um {direct_db} dB gedämpft");
+    }
+
+    #[test]
+    fn non_finite_spectrum_does_not_latch() {
+        let y: Vec<C32> = (0..BINS).map(|k| C32::new(0.1 + (k % 7) as f32 * 0.01, 0.0)).collect();
+        let mut bad = y.clone();
+        bad[10] = C32::new(f32::INFINITY, 0.0);
+        bad[20] = C32::new(f32::NAN, 0.0);
+        bad[30] = C32::new(1e30, 0.0);
+        let (mut d, mut fresh) = (LateReverb::new(SR), LateReverb::new(SR));
+        d.set_params(true, 0.6, 0.5);
+        fresh.set_params(true, 0.6, 0.5);
+        d.gains(&bad);
+        for _ in 0..100 {
+            d.gains(&y);
+            fresh.gains(&y);
+        }
+        for k in 0..BINS {
+            assert!((d.gain[k] - fresh.gain[k]).abs() < 1e-4, "k={k}: {} statt {}", d.gain[k], fresh.gain[k]);
+        }
     }
 }

@@ -1,6 +1,17 @@
 """Einstellungen → Controls der Filterkette („<knoten>:<control>“)."""
 from .config import Config
-from .constants import DFN_LATENCY
+from .constants import AEC_PRE_GAIN_DB, DFN_LATENCY
+
+#: Control „Mode“ von uma8_beam; 1 = alle Richtungen (nur Mittel-Mikrofon)
+BEAM_MODES = {"superdirective": 0.0, "delay_and_sum": 2.0}
+OMNI_MODE = 1.0
+#: Untergrenze des White-Noise-Gains des superdirektiven Beams. −3 dB war im Raum-Test mit ±1 dB
+#: Empfindlichkeitsstreuung der Mikrofone am besten (tools/eval_dereverb.py, Design-Dokument).
+MIN_WNG_DB = -3.0
+#: Empfohlenes „Null Weight (dB)“ der Nullstellen auf die Lautsprecher (tools/eval_nulls.py)
+NULL_WEIGHT_DB = 10.0
+NULL_KEYS = ("beam:Null 1 Azimuth (deg)", "beam:Null 1 Elevation (deg)", "beam:Null 2 Azimuth (deg)",
+             "beam:Null 2 Elevation (deg)", "beam:Null Weight (dB)")
 
 
 def geometry_params(cfg: Config) -> dict[str, float]:
@@ -15,26 +26,44 @@ def geometry_params(cfg: Config) -> dict[str, float]:
 
 def steering_params(cfg: Config, tracked_azimuth: float | None = None) -> dict[str, float]:
     if cfg.direction_mode == "omni":
-        return {"beam:Mode": 1.0, "beam:Azimuth (deg)": 0.0, "beam:Elevation (deg)": 0.0}
+        return {"beam:Mode": OMNI_MODE, "beam:Azimuth (deg)": 0.0, "beam:Elevation (deg)": 0.0}
     if cfg.direction_mode == "manual":
         az = cfg.manual_azimuth
     elif cfg.direction_mode == "tracking" and tracked_azimuth is not None:
         az = tracked_azimuth
     else:
         az = cfg.calibrated_azimuth
-    return {"beam:Mode": 0.0, "beam:Azimuth (deg)": float(az) % 360.0,
+    return {"beam:Mode": BEAM_MODES[cfg.beamformer], "beam:Azimuth (deg)": float(az) % 360.0,
             "beam:Elevation (deg)": float(cfg.calibrated_elevation)}
+
+
+def beam_gain_db(cfg: Config) -> float:
+    """„Gain (dB)“ von uma8_beam: Gesamtverstärkung abzüglich der Vorverstärkung vor der Echounterdrückung."""
+    return float(cfg.gain_db) - (AEC_PRE_GAIN_DB if cfg.echo_cancel else 0.0)
 
 
 def processing_params(cfg: Config) -> dict[str, float]:
     return {
-        "beam:Gain (dB)": float(cfg.gain_db),
+        "beam:Gain (dB)": beam_gain_db(cfg),
         "beam:Dereverb": 1.0 if cfg.dereverb else 0.0,
         "beam:Dereverb Strength": float(cfg.dereverb_strength),
         "beam:Dereverb T60 (s)": float(cfg.dereverb_t60),
+        "beam:Late Reverb": 1.0 if cfg.late_reverb else 0.0,
+        "beam:Min WNG (dB)": MIN_WNG_DB,
         "dfn:Attenuation Limit (dB)": float(cfg.noise_reduction_db),
         "limit:Ceiling (dB)": float(cfg.ceiling_db),
     }
+
+
+def null_params(cfg: Config, force: bool = False) -> dict[str, float]:
+    """Nullstellen auf die gemessenen Lautsprecher (gleiches Bezugssystem wie „Azimuth (deg)“), ein Lautsprecher
+    auf beide. Ohne gemessene Lautsprecher keine Controls, Kette und Live-Werte bleiben wie ohne Profil;
+    `force` liefert dann „aus“ (Profil gelöscht, das laufende Plugin hat noch Nullstellen)."""
+    if not cfg.speakers:
+        return dict.fromkeys(NULL_KEYS, 0.0) if force else {}
+    (az1, el1), (az2, el2) = cfg.speakers[0], cfg.speakers[-1]
+    return dict(zip(NULL_KEYS, (float(az1) % 360.0, float(el1), float(az2) % 360.0, float(el2),
+                                float(cfg.null_weight_db))))
 
 
 def mix_params(active: bool) -> dict[str, float]:
@@ -43,4 +72,4 @@ def mix_params(active: bool) -> dict[str, float]:
 
 def all_params(cfg: Config, tracked_azimuth: float | None = None) -> dict[str, float]:
     return {**geometry_params(cfg), **steering_params(cfg, tracked_azimuth),
-            **processing_params(cfg), **mix_params(cfg.active)}
+            **processing_params(cfg), **null_params(cfg), **mix_params(cfg.active)}

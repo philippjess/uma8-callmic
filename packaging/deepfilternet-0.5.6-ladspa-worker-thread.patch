@@ -1,0 +1,135 @@
+ladspa: stop and join the worker thread when the plugin is dropped
+
+Every instance spawned a worker thread whose loop never exited and polled the
+input queue every few milliseconds. LADSPA cleanup() drops the plugin, but the
+thread kept running, so each instantiate/cleanup cycle (e.g. a PipeWire
+filter-chain waking up from suspend) leaked one busy-polling thread.
+
+Add a stop flag checked by the worker loop and a Drop impl that sets it and
+joins the thread. Audio processing is unchanged. The new unit test instantiates
+and drops several mono and stereo instances and checks /proc/self/task.
+
+--- a/ladspa/src/lib.rs
++++ b/ladspa/src/lib.rs
+@@ -2,6 +2,7 @@
+ use std::fmt;
+ use std::io::{self, Write};
+ use std::sync::{
++    atomic::{AtomicBool, Ordering},
+     mpsc::{sync_channel, Receiver, SyncSender},
+     Arc, Mutex, Once,
+ };
+@@ -59,7 +60,8 @@
+     t_proc_change: usize,
+     sleep_duration: Duration,
+     control_hist: DfControlHistory,
+-    _h: JoinHandle<()>, // Worker thread handle
++    stop: Arc<AtomicBool>,      // Tells the worker thread to exit (set on drop)
++    _h: Option<JoinHandle<()>>, // Worker thread handle, joined on drop
+     #[cfg(feature = "dbus")]
+     _dbus: Option<(JoinHandle<()>, Arc<Event>)>, // dbus thread handle
+ }
+@@ -109,13 +111,14 @@
+     controls: ControlRecv,
+     sleep_duration: Duration,
+     id: String,
++    stop: Arc<AtomicBool>,
+ ) -> impl FnMut() {
+     move || {
+         let mut df = unsafe { MODEL.clone().unwrap() };
+         let mut inframe = Array2::zeros((df.ch, df.hop_size));
+         let mut outframe = Array2::zeros((df.ch, df.hop_size));
+         let t_audio_ms = df.hop_size as f32 / df.sr as f32 * 1000.;
+-        loop {
++        while !stop.load(Ordering::Relaxed) {
+             if let Ok((c, v)) = controls.try_recv() {
+                 log::info!("DF {} | Setting '{}' to {:.1}", id, c, v);
+                 match c {
+@@ -223,12 +226,14 @@
+ 
+         let (control_tx, control_rx) = sync_channel(32);
+ 
++        let stop = Arc::new(AtomicBool::new(false));
+         let worker_handle = thread::spawn(get_worker_fn(
+             Arc::clone(&i_tx),
+             Arc::clone(&o_rx),
+             control_rx,
+             sleep_duration,
+             id.clone(),
++            Arc::clone(&stop),
+         ));
+         let hist = DfControlHistory::default();
+         log::info!(
+@@ -248,7 +253,8 @@
+             t_proc_change: 0,
+             sleep_duration,
+             control_hist: hist,
+-            _h: worker_handle,
++            stop,
++            _h: Some(worker_handle),
+             #[cfg(feature = "dbus")]
+             _dbus: None,
+         }
+@@ -489,6 +495,20 @@
+     }
+ }
+ 
++impl Drop for DfPlugin {
++    // LADSPA cleanup() drops the plugin. Without stopping the worker here, every
++    // instantiate/cleanup cycle leaked a thread that kept polling forever.
++    fn drop(&mut self) {
++        self.stop.store(true, Ordering::Relaxed);
++        if let Some(h) = self._h.take() {
++            if h.join().is_err() {
++                log::error!("DF {} | Worker thread panicked", self.id);
++            }
++        }
++        log::info!("DF {} | cleanup", self.id);
++    }
++}
++
+ #[cfg(feature = "dbus")]
+ fn build_dbus_session<I>(control: I) -> Result<zbus::blocking::Connection, zbus::Error>
+ where
+@@ -725,3 +745,41 @@
+         _ => None,
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn thread_count() -> usize {
++        std::fs::read_dir("/proc/self/task").unwrap().count()
++    }
++
++    /// Thread count once it reaches `want`; a joined thread may stay listed for a moment.
++    fn settled_thread_count(want: usize) -> usize {
++        let t0 = Instant::now();
++        loop {
++            let n = thread_count();
++            if n == want || t0.elapsed() > Duration::from_secs(5) {
++                return n;
++            }
++            sleep(Duration::from_millis(10));
++        }
++    }
++
++    #[test]
++    fn cleanup_stops_worker_threads() {
++        for (index, channels) in [(0, 1), (1, 2)] {
++            let desc = get_ladspa_descriptor(index).unwrap();
++            // Warm-up: the first instance loads the model; one-off threads stay out of the baseline.
++            let before = thread_count();
++            drop((desc.new)(&desc, 48000));
++            let base = settled_thread_count(before);
++
++            let n = 8;
++            let plugins: Vec<_> = (0..n).map(|_| (desc.new)(&desc, 48000)).collect();
++            assert_eq!(thread_count(), base + n, "{channels} ch: one worker per instance");
++            drop(plugins);
++            assert_eq!(settled_thread_count(base), base, "{channels} ch: worker threads leaked");
++        }
++    }
++}

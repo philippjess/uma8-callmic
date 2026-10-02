@@ -4,8 +4,9 @@ import numpy as np
 import pytest
 
 from ladspa_host import Plugin
+from uma8_callmic.constants import dfn_plugin
 
-DFN = "/usr/lib/ladspa/libdeep_filter_ladspa.so"
+DFN = str(dfn_plugin())
 
 
 def measure(limit_db: float) -> tuple[int, float]:

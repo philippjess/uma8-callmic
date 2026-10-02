@@ -1,0 +1,7 @@
+# rpmlint-Einstellungen für packaging/build-rpms.sh
+Filters = [
+    # Summary und %description sind deutsch, rpmlint prüft gegen ein englisches Wörterbuch
+    'spelling-error',
+    # Diese Quellen erzeugt build-rpms.sh selbst (Quellbaum, vendorte Crates), es gibt keine Download-URL
+    'invalid-url Source[0-9]+: (uma8-callmic|DeepFilterNet)-[^ ]+\.tar\.',
+]

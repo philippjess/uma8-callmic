@@ -5,6 +5,9 @@ BindsTo=pipewire.service
 
 [Service]
 Type=simple
+# @BIN@ ersetzt das RPM durch /usr/bin/uma8-callmic, install.sh durch seinen Startbefehl.
+# Schreibt die Konfiguration vor jedem Start aus den Einstellungen – auch, wenn das Tray nie lief.
+ExecStartPre=@BIN@ --write-config
 ExecStart=/usr/bin/pipewire -c %h/.config/pipewire/uma8-callmic.conf
 Restart=on-failure
 RestartSec=2

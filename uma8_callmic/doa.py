@@ -32,37 +32,59 @@ class SrpPhat:
         self.nfft = nfft
         freqs = np.fft.rfftfreq(nfft, 1 / sample_rate)
         self.bins = np.where((freqs >= fmin) & (freqs <= fmax))[0]
-        w = 2 * np.pi * freqs[self.bins]
+        self.w = 2 * np.pi * freqs[self.bins]
+        self.positions = np.asarray(positions, float)
         m = positions.shape[0]
         self.pairs = [(i, j) for i in range(m) for j in range(i + 1, m)]
         az_grid, el_grid = np.meshgrid(np.arange(0.0, 360.0, az_step), np.asarray(elevations, float), indexing="ij")
         self.grid_az, self.grid_el = az_grid.ravel(), el_grid.ravel()
-        a, e = np.radians(self.grid_az), np.radians(self.grid_el)
-        u = np.stack([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)], axis=1)
-        lead = u @ positions.T / C_SOUND                                    # (G, M)
-        dl = np.stack([lead[:, i] - lead[:, j] for i, j in self.pairs], 1)  # (G, P)
-        # X_i X_j* = |S|² e^{+jω(lead_i − lead_j)} → Ausrichten mit e^{−jω·dl}
-        self.steer = np.exp(-1j * dl[:, :, None] * w[None, None, :])      # (G, P, K)
+        self.steer = self._steering(self.grid_az, self.grid_el)            # (G, P, K)
         self.window = np.hanning(nfft)
 
-    def cross_spectra(self, block: np.ndarray) -> np.ndarray:
+    def _steering(self, az_deg: np.ndarray, el_deg: np.ndarray) -> np.ndarray:
+        a, e = np.radians(az_deg), np.radians(el_deg)
+        u = np.stack([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)], axis=1)
+        lead = u @ self.positions.T / C_SOUND                               # (G, M)
+        dl = np.stack([lead[:, i] - lead[:, j] for i, j in self.pairs], 1)  # (G, P)
+        # X_i X_j* = |S|² e^{+jω(lead_i − lead_j)} → Ausrichten mit e^{−jω·dl}
+        return np.exp(-1j * dl[:, :, None] * self.w[None, None, :])
+
+    def spectra(self, block: np.ndarray) -> np.ndarray:
+        """(F, K, M): gefensterte Spektren je Frame (Hop nfft/2) in den Bins des Bands."""
         hop = self.nfft // 2
         frames = np.stack([block[s:s + self.nfft] for s in range(0, len(block) - self.nfft + 1, hop)])
-        spec = np.fft.rfft(frames * self.window[None, :, None], axis=1)[:, self.bins, :]   # (F, K, M)
+        return np.fft.rfft(frames * self.window[None, :, None], axis=1)[:, self.bins, :]
+
+    def cross_spectra(self, block: np.ndarray, select: np.ndarray | None = None) -> np.ndarray:
+        """PHAT-normierte Kreuzspektren (P, K), gemittelt über alle Frames oder nur die in `select` (bool je Frame)."""
+        spec = self.spectra(block)
+        if select is not None:
+            spec = spec[np.asarray(select, bool)]
         out = np.empty((len(self.pairs), len(self.bins)), dtype=complex)
         for p, (i, j) in enumerate(self.pairs):
             c = spec[:, :, i] * np.conj(spec[:, :, j])
             out[p] = np.mean(c / (np.abs(c) + 1e-12), axis=0)
         return out
 
-    def estimate(self, block: np.ndarray) -> DoaResult:
-        cs = self.cross_spectra(np.asarray(block, dtype=float))
-        srp = np.real(np.einsum("gpk,pk->g", self.steer, cs)) / cs.size
+    def srp(self, cs: np.ndarray) -> np.ndarray:
+        """Normierte SRP (−1 … 1) je Gitterrichtung."""
+        return np.real(np.einsum("gpk,pk->g", self.steer, cs)) / cs.size
+
+    def srp_at(self, cs: np.ndarray, az_deg, el_deg) -> np.ndarray:
+        """Normierte SRP für beliebige Richtungen (Verfeinerung um ein Gittermaximum)."""
+        steer = self._steering(np.atleast_1d(np.asarray(az_deg, float)), np.atleast_1d(np.asarray(el_deg, float)))
+        return np.real(np.einsum("gpk,pk->g", steer, cs)) / cs.size
+
+    def estimate_cs(self, cs: np.ndarray) -> DoaResult:
+        srp = self.srp(cs)
         best = int(np.argmax(srp))
         far = angle_diff_array(self.grid_az, self.grid_az[best]) > 30.0
         second = float(np.max(srp[far])) if far.any() else -1.0
         return DoaResult(float(self.grid_az[best]), float(self.grid_el[best]),
                          float(srp[best] - second), float(srp[best]))
+
+    def estimate(self, block: np.ndarray) -> DoaResult:
+        return self.estimate_cs(self.cross_spectra(np.asarray(block, dtype=float)))
 
 
 def angle_diff_array(a: np.ndarray, b: float) -> np.ndarray:

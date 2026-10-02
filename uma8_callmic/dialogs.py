@@ -11,15 +11,23 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 from . import constants as K
 from .array import ArrayGeometry
 from .calibration import evaluate
-from .capture import Capture
+from .capture import Capture, open_capture
 from .config import Config
 from .doa import SrpPhat, VoiceDetector
 from .geometry import check as check_geometry
-from .pwctl import raw_source
+from .params import NULL_WEIGHT_DB
+from .pwctl import raw_target
+from .workspace import band_level_dbfs
 
 DIRECTIONS = [("Kalibriert", "calibrated"), ("Manuell", "manual"),
               ("Automatisch nachführen", "tracking"), ("Alle Richtungen", "omni")]
+BEAMFORMERS = [("Superdirektiv", "superdirective"), ("Delay-and-Sum (zum Vergleich)", "delay_and_sum")]
 BLOCK = 9600  # 0,2 s
+NULLS_TEXT = "Lautsprecher ausblenden (Nullstellen)"
+NULLS_TOOLTIP = ("Richtet Nullstellen des Strahls auf die eingemessenen Lautsprecher. Das dämpft ihren Direktschall "
+                 "(1–4 kHz etwa 5–11 dB), das Echo insgesamt aber nur wenig (im simulierten Raum 0,3–1 dB), weil "
+                 "Reflexionen überwiegen. Die Echounterdrückung bleibt die Hauptsache. Am besten im Anruf an und aus "
+                 "vergleichen.")
 
 
 def level_dbfs(block: np.ndarray) -> float:
@@ -66,13 +74,23 @@ class OptionsDialog(QDialog):
             self.direction.addItem(text, key)
         self.direction.setCurrentIndex([k for _, k in DIRECTIONS].index(cfg.direction_mode))
         form.addRow("Richtung", self.direction)
-        cal = (f"Kalibriert: {cfg.calibrated_azimuth:.0f}°, Höhe {cfg.calibrated_elevation:.0f}°"
-               if cfg.calibrated else "Noch nicht kalibriert (Tray-Menü → Kalibrieren…)")
-        form.addRow("", QLabel(cal))
+        self.cal_label = QLabel()
+        form.addRow("", self.cal_label)
         self.manual = _slider(0, 359, cfg.manual_azimuth)
         self.manual_label = QLabel(f"{cfg.manual_azimuth:.0f}°")
         form.addRow("Winkel (manuell)", _with_label(self.manual, self.manual_label))
-        self.dereverb = QCheckBox("Hallunterdrückung")
+        self.beamformer = QComboBox()
+        for text, key in BEAMFORMERS:
+            self.beamformer.addItem(text, key)
+        self.beamformer.setCurrentIndex([k for _, k in BEAMFORMERS].index(cfg.beamformer))
+        form.addRow("Beamformer", self.beamformer)
+        self.late = QCheckBox("Hallunterdrückung")
+        self.late.setToolTip("Dämpft den Nachhall nach jedem Wort über ein Abklingmodell (Nachhallzeit des Raums).")
+        self.late.setChecked(cfg.late_reverb)
+        form.addRow("", self.late)
+        self.dereverb = QCheckBox("Zusätzlich Kohärenzfilter")
+        self.dereverb.setToolTip("Dämpft auch diffusen Schall während der Sprache. Im Test nur wenig mehr Wirkung, "
+                                 "dafür etwas leiserer, fleckigerer Klang; daher standardmäßig aus.")
         self.dereverb.setChecked(cfg.dereverb)
         form.addRow("", self.dereverb)
         self.strength = _slider(0, 100, cfg.dereverb_strength * 100)
@@ -91,6 +109,13 @@ class OptionsDialog(QDialog):
         form.addRow("Verstärkung", _with_label(self.gain, self.gain_label))
         self.meter = LevelMeter()
         form.addRow("Pegel (Ausgang)", self.meter)
+        self.echo = QCheckBox("Echounterdrückung (Lautsprecher)")
+        self.echo.setToolTip("Entfernt den Ton der Standardausgabe aus dem Mikrofon, damit das Gegenüber sich nicht "
+                             "selbst hört. Umschalten startet die Filterkette neu (kurze Tonpause).")
+        self.echo.setChecked(cfg.echo_cancel)
+        form.addRow("", self.echo)
+        self.nulls = QCheckBox(NULLS_TEXT)
+        form.addRow("", self.nulls)
         self.autostart = QCheckBox("Beim Login starten")
         self.autostart.setChecked(cfg.autostart)
         form.addRow("", self.autostart)
@@ -102,11 +127,14 @@ class OptionsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(buttons)
-        for signal in (self.direction.currentIndexChanged, self.manual.valueChanged, self.dereverb.toggled,
+        self.sync_profile(cfg)
+        for signal in (self.direction.currentIndexChanged, self.manual.valueChanged,
+                       self.beamformer.currentIndexChanged, self.dereverb.toggled, self.late.toggled,
                        self.strength.valueChanged, self.t60.valueChanged, self.noise.valueChanged,
-                       self.gain.valueChanged, self.autostart.toggled):
+                       self.gain.valueChanged, self.echo.toggled, self.autostart.toggled):
             signal.connect(self._changed)
-        self._update_enabled()
+        # Nullstellen nur melden, wenn der Nutzer sie hier umschaltet: Das Profil ändert sich auch im Assistenten
+        self.nulls.toggled.connect(self._nulls_toggled)
         self.capture = None
         if meter:
             self.capture = Capture(K.SOURCE_NODE, 1, seconds=1.0)
@@ -115,20 +143,41 @@ class OptionsDialog(QDialog):
             self.timer.start(100)
         self.finished.connect(self._cleanup)
 
+    def sync_profile(self, cfg: Config) -> None:
+        """Kalibrierung und Nullstellen aus `cfg` anzeigen, ohne eine Änderung zu melden (beim Öffnen und wenn
+        Assistent oder Kalibrierung bei offenem Dialog speichern)."""
+        self.cal_label.setText(f"Kalibriert: {cfg.calibrated_azimuth:.0f}°, Höhe {cfg.calibrated_elevation:.0f}°"
+                               if cfg.calibrated else "Noch nicht kalibriert (Tray-Menü → Kalibrieren…)")
+        self.has_speakers = bool(cfg.speakers)
+        self.null_weight_on = cfg.null_weight_db if cfg.null_weight_db > 0 else NULL_WEIGHT_DB
+        self.nulls.setToolTip(NULLS_TOOLTIP if cfg.speakers else "Erst Lautsprecher einmessen (Tray-Menü → "
+                              "Arbeitsplatz einmessen…).")
+        blocked = self.nulls.blockSignals(True)
+        self.nulls.setChecked(cfg.null_weight_db > 0)
+        self.nulls.blockSignals(blocked)
+        self._update_enabled()
+
     def _update_enabled(self) -> None:
         self.manual.setEnabled(self.direction.currentData() == "manual")
-        self.strength.setEnabled(self.dereverb.isChecked())
-        self.t60.setEnabled(self.dereverb.isChecked())
+        self.beamformer.setEnabled(self.direction.currentData() != "omni")
+        self.strength.setEnabled(self.dereverb.isChecked() or self.late.isChecked())
+        self.t60.setEnabled(self.late.isChecked())
+        # Nullstellen wirken nur im superdirektiven Strahl
+        self.nulls.setEnabled(self.has_speakers and self.direction.currentData() != "omni"
+                              and self.beamformer.currentData() == "superdirective")
 
     def _changed(self, *_):
         updates = {
             "direction_mode": self.direction.currentData(),
             "manual_azimuth": float(self.manual.value()),
+            "beamformer": self.beamformer.currentData(),
             "dereverb": self.dereverb.isChecked(),
+            "late_reverb": self.late.isChecked(),
             "dereverb_strength": self.strength.value() / 100.0,
             "dereverb_t60": round(self.t60.value(), 2),
             "noise_reduction_db": float(self.noise.value()),
             "gain_db": float(self.gain.value()),
+            "echo_cancel": self.echo.isChecked(),
             "autostart": self.autostart.isChecked(),
         }
         self.manual_label.setText(f"{updates['manual_azimuth']:.0f}°")
@@ -136,6 +185,9 @@ class OptionsDialog(QDialog):
         self.gain_label.setText(f"{updates['gain_db']:.0f} dB")
         self._update_enabled()
         self.on_change(updates)
+
+    def _nulls_toggled(self, checked: bool) -> None:
+        self.on_change({"null_weight_db": self.null_weight_on if checked else 0.0})
 
     def _meter_tick(self) -> None:
         block = self.capture.latest(4800) if self.capture else None
@@ -187,7 +239,7 @@ class _RecordingDialog(QDialog):
         self.ticks = 0
         self.accept_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
-        self.capture = Capture(raw_source(), 8, seconds=seconds)
+        self.capture = open_capture(raw_target(), seconds)
         self.timer.start(200)
 
     def _finish(self) -> None:
@@ -228,11 +280,14 @@ class CalibrationDialog(_RecordingDialog):
                          "dann 5 Sekunden normal sprechen.", parent)
         self.geometry, self.on_accept = geometry, on_accept
         self.result: tuple[float, float] | None = None
+        #: Rohpegel der Sprachblöcke (Sprachband, Mittel-Mikrofon) für das Arbeitsplatz-Profil
+        self.speech_levels: list[float] = []
 
     def start(self):
         self.estimator = SrpPhat(self.geometry.positions())
         self.vad = VoiceDetector()
         self.results = []
+        self.speech_levels = []
         self.result = None
         self.info.setText("Bitte still sein …")
         self._begin(3.0)
@@ -253,6 +308,7 @@ class CalibrationDialog(_RecordingDialog):
             self.info.setText("Jetzt normal sprechen …")
         if self.ticks > self.QUIET_TICKS and speech:
             self.results.append(self.estimator.estimate(block[:, :7]))
+            self.speech_levels.append(band_level_dbfs(center))
         if self.ticks >= total:
             self._finish()
             outcome = evaluate(self.results)
@@ -268,7 +324,10 @@ class CalibrationDialog(_RecordingDialog):
 
 
 class GeometryDialog(_RecordingDialog):
-    TICKS = 50  # 10 s
+    TICKS = 50  # 10 s Aufnahme
+    #: Nach 10 s Wanduhr fehlen pw-record noch Start und letzter Block (gemessen 478208 statt 480000 Frames);
+    #: fertig ist die Messung erst mit 10 s Daten, spätestens 2 s danach gilt sie als abgerissen
+    GRACE_TICKS = 10
 
     def __init__(self, default: ArrayGeometry, on_done: Callable[[bool, ArrayGeometry | None], None], parent=None):
         super().__init__("UMA-8 Call Mic – Kanalzuordnung",
@@ -284,15 +343,17 @@ class GeometryDialog(_RecordingDialog):
 
     def _tick(self):
         self.ticks += 1
-        self.progress.setValue(int(100 * min(self.ticks, self.TICKS) / self.TICKS))
+        need = self.TICKS * BLOCK
+        got = self.capture.total() if self.capture else 0
+        self.progress.setValue(int(100 * min(got, need) / need))
         if self._no_data():
             return
         recent = self.capture.latest(BLOCK)
         if recent is not None:
             self.meter.show_level(level_dbfs(recent[:, self.default.center]))
-        if self.ticks < self.TICKS:
+        if got < need and self.ticks < self.TICKS + self.GRACE_TICKS:
             return
-        block = self.capture.latest(self.TICKS * BLOCK)
+        block = self.capture.latest(need)
         self._finish()
         if block is None:
             self.info.setText("Zu wenig Daten – bitte wiederholen.")

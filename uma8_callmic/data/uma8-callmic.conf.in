@@ -14,6 +14,7 @@ context.modules = [
     { name = libpipewire-module-protocol-native }
     { name = libpipewire-module-client-node }
     { name = libpipewire-module-adapter }
+@AEC_MODULES@
     { name = libpipewire-module-filter-chain
         args = {
             node.description = "UMA-8 Call Mic"
@@ -36,16 +37,16 @@ context.modules = [
                     { output = "beam:Raw Out"  input = "mix:In 2" }
                     { output = "mix:Out"       input = "limit:In" }
                 ]
-                inputs  = [ "beam:In 0" "beam:In 1" "beam:In 2" "beam:In 3" "beam:In 4" "beam:In 5" "beam:In 6" null ]
+                inputs  = [ @BEAM_INPUTS@ ]
                 outputs = [ "limit:Out" ]
             }
             capture.props = {
                 node.name         = "@CAPTURE_NODE@"
                 node.description  = "UMA-8 Call Mic (Eingang)"
                 node.passive      = true
-                target.object     = "@RAW_DEVICE@"
-                audio.channels    = 8
-                audio.position    = [ FL FR FC LFE RL RR FLC FRC ]
+                target.object     = "@CAPTURE_TARGET@"
+                audio.channels    = @CAPTURE_CHANNELS@
+                audio.position    = [ @CAPTURE_POSITIONS@ ]
                 stream.dont-remix = true
             }
             playback.props = {
@@ -63,3 +64,4 @@ context.modules = [
         }
     }
 ]
+@AEC_EXEC@

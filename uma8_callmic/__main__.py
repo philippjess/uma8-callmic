@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -11,14 +12,14 @@ from . import constants as K
 
 
 def _check_geometry_cli() -> int:
-    from .capture import Capture
+    from .capture import open_capture
     from .config import load
     from .geometry import check
-    from .pwctl import raw_source
+    from .pwctl import raw_target
 
     cfg = load(K.CONFIG_FILE).config
     print("Bitte 10 Sekunden still sein …", flush=True)
-    cap = Capture(raw_source(), 8, seconds=12.0)
+    cap = open_capture(raw_target(), 12.0)
     try:
         time.sleep(10.5)
         block = cap.latest(10 * K.SAMPLE_RATE)
@@ -41,7 +42,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="PipeWire-Konfiguration aus den Einstellungen schreiben und beenden")
     ap.add_argument("--check-geometry", action="store_true",
                     help="Kanalzuordnung 10 s lang prüfen und Ergebnis ausgeben")
+    ap.add_argument("--ref-linker", action="store_true",
+                    help="Echo-Referenz nur während einer Aufnahme verbinden (startet die Kette selbst)")
     args = ap.parse_args(argv)
+
+    if args.ref_linker:  # läuft im Dienst der Kette: Meldungen ins Journal, nicht ins Log des Trays
+        from .reflink import METADATA_ENV, run
+
+        logging.basicConfig(level=logging.INFO, format="uma8-callmic --ref-linker: %(levelname)s %(message)s")
+        return run(os.environ.get(METADATA_ENV) or "default")
 
     K.STATE_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",

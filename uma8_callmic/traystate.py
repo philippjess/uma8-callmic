@@ -14,7 +14,8 @@ def icon_state(status: Status, active: bool) -> str:
     return "active" if active else "inactive"
 
 
-def tooltip(status: Status, cfg: Config, tracked: float | None = None, warnings=()) -> str:
+def tooltip(status: Status, cfg: Config, tracked: float | None = None, warnings=(), idle: bool = False) -> str:
+    """`idle`: Nachführung ruht, weil gerade kein Programm das Mikrofon nutzt."""
     lines = ["UMA-8 Call Mic"]
     if status.problem:
         lines.append("⚠ " + status.problem)
@@ -27,6 +28,8 @@ def tooltip(status: Status, cfg: Config, tracked: float | None = None, warnings=
             mode += f" ({cfg.manual_azimuth:.0f}°)"
         elif cfg.direction_mode == "tracking" and tracked is not None:
             mode += f" ({tracked:.0f}°)"
+        if cfg.direction_mode == "tracking" and idle:
+            mode += ", ruht ohne Aufnahme"
         lines.append(mode)
     lines += [f"Hinweis: {w}" for w in warnings]
     return "\n".join(lines)

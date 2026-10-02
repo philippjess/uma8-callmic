@@ -2,25 +2,26 @@
 from __future__ import annotations
 
 import logging
-import shutil
+import subprocess
+import time
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
-from . import chainconf, pwctl
+from . import chainconf, pwctl, reflink
 from . import constants as K
 from .array import ArrayGeometry
-from .capture import Capture
+from .capture import Capture, open_capture
 from .config import load, save
 from .dialogs import CalibrationDialog, GeometryDialog, OptionsDialog
 from .doa import SrpPhat, VoiceDetector
-from .params import all_params, steering_params
-from .tracker import Tracker, TrackerThread
+from .params import all_params, null_params, steering_params
+from .tracker import Tracker, TrackerThread, zone_for
 from .traystate import icon_state, tooltip
+from .workspace_ui import PlacementWindow, WorkspaceWizard
 
 log = logging.getLogger(__name__)
-ICON_DIR = K.REPO_DIR / "uma8_callmic" / "icons"
 
 
 class TrayApp:
@@ -29,11 +30,16 @@ class TrayApp:
         res = load(K.CONFIG_FILE)
         self.cfg, self.cfg_broken, self.warnings = res.config, res.broken, list(res.warnings)
         self.tracked: float | None = None
+        self.tracker: Tracker | None = None
         self.tracker_thread: TrackerThread | None = None
         self.tracker_capture: Capture | None = None
+        #: Nimmt ein Programm von „UMA-8 Call Mic“ auf? Nur dann läuft die Nachführung (sonst hielte ihre
+        #: Aufnahme die ganze Kette samt DeepFilterNet wach, und Ton aus Videos zöge den Strahl)
+        self.mic_in_use = False
+        self.track_gate = reflink.Gate()
         self.chain_node: int | None = None
         self.dialogs: dict[str, object] = {}
-        self.icons = {name: QIcon(str(ICON_DIR / f"{name}.svg")) for name in ("active", "inactive", "error")}
+        self.icons = {name: QIcon(str(K.ICON_DIR / f"{name}.svg")) for name in ("active", "inactive", "error")}
 
         self.tray = QSystemTrayIcon(self.icons["inactive"])
         menu = QMenu()
@@ -44,6 +50,8 @@ class TrayApp:
         menu.addAction(self.act_active)
         menu.addSeparator()
         menu.addAction("Kalibrieren…", self.open_calibration)
+        menu.addAction("Arbeitsplatz einmessen…", self.open_wizard)
+        menu.addAction("Platzierung…", self.open_placement)
         menu.addAction("Optionen…", self.open_options)
         menu.addSeparator()
         menu.addAction("Beenden", app.quit)
@@ -53,32 +61,63 @@ class TrayApp:
         self.tray.show()
 
         chainconf.write(self.cfg)
+        if self.cfg.setup_done:
+            # Nur anzeigen, was ist: Ein gelöschter Autostart-Eintrag bleibt gelöscht, ein per systemctl
+            # deaktivierter Dienst deaktiviert; ändern kann beides nur der Nutzer (Optionen bzw. systemctl).
+            self.cfg.autostart = K.AUTOSTART_FILE.exists()
+        else:
+            self.first_run_setup()
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh)
         self.timer.start(2000)
         self.refresh()
         self.update_tracking()
+        if res.migrated:
+            self.save_config()
+            self.tray.showMessage("UMA-8 Call Mic", "Neue Hallunterdrückung ist jetzt an (Stärke auf Standard "
+                                  "zurückgesetzt). Abschalten unter Optionen…")
         if not self.cfg.geometry_checked:
             QTimer.singleShot(1500, self.open_geometry)
         elif not self.cfg.calibrated:
             self.tray.showMessage("UMA-8 Call Mic", "Bitte einmal kalibrieren: Rechtsklick → Kalibrieren…")
 
+    def first_run_setup(self) -> None:
+        """Einmal je Benutzer (Paket ohne install.sh; ältere Einstellungen ohne „setup_done“ einmal, für schon
+        eingerichtete Benutzer ohne Wirkung): Autostart nach Einstellung, Dienst aktivieren und starten.
+        Scheitert systemctl, beim nächsten Start erneut."""
+        self.set_autostart(self.cfg.autostart)
+        enabled = pwctl.ensure_service_enabled()
+        if enabled is None:
+            return
+        self.cfg.setup_done = True
+        self.save_config()
+        if enabled:
+            self.tray.showMessage("UMA-8 Call Mic", "Filterkette eingerichtet. „UMA-8 Call Mic“ jetzt in den "
+                                  "Audio-Einstellungen als Mikrofon wählen.")
+
     # --- Zustand ---------------------------------------------------------------
 
     def refresh(self) -> None:
-        st = pwctl.status()
-        try:
-            node = pwctl.find_node(pwctl.dump(), K.CAPTURE_NODE) if st.chain else None
-        except Exception:  # pw-dump hängt/fehlt: Zustand beim nächsten Durchlauf erneut prüfen
-            log.warning("pw-dump fehlgeschlagen", exc_info=True)
-            node = None
+        objs = pwctl.try_dump()  # None: pw-dump hängt/fehlt, Zustand beim nächsten Durchlauf erneut prüfen
+        if objs is None:
+            log.warning("pw-dump fehlgeschlagen")
+        st = pwctl.status(self.cfg.echo_cancel, objs or [])
+        node = pwctl.find_node(objs, K.CAPTURE_NODE) if st.chain and objs else None
+        if objs is not None:  # ohne Auskunft bleibt der letzte Stand
+            self.mic_in_use = reflink.in_use(reflink.Graph(objs))
         if node is not None and node != self.chain_node:
             self.chain_node = node
             self.apply_all()  # Kette (neu) gestartet: Live-Werte an Einstellungen angleichen
         elif node is None:
             self.chain_node = None
+        if self.tracker_capture is not None and not self.tracker_capture.alive and not st.problem:
+            # Aufnahme endet, wenn ihre Quelle verschwindet (Kette neu gestartet, Gerät ab): neu verbinden
+            self.update_tracking(restart=True)
+        else:
+            self.update_tracking()
         self.tray.setIcon(self.icons[icon_state(st, self.cfg.active)])
-        self.tray.setToolTip(tooltip(st, self.cfg, self.tracked, self.warnings))
+        idle = self.cfg.direction_mode == "tracking" and self.tracker_thread is None
+        self.tray.setToolTip(tooltip(st, self.cfg, self.tracked, self.warnings, idle))
 
     def _set(self, params: dict[str, float]) -> None:
         if self.chain_node is None:
@@ -90,6 +129,16 @@ class TrayApp:
 
     def apply_all(self) -> None:
         self._set(all_params(self.cfg, self.tracked))
+
+    def apply_profile(self, updates: dict) -> None:
+        """Arbeitsplatz-Profil (Assistent, Platzierung) speichern und live setzen; auch gelöschte Nullstellen."""
+        for key, value in updates.items():
+            setattr(self.cfg, key, value)
+        self.save_config()
+        self._set({**all_params(self.cfg, self.tracked), **null_params(self.cfg, force=True)})
+        self._sync_zone()
+        self._sync_options()
+        self.refresh()
 
     def save_config(self) -> None:
         save(self.cfg, K.CONFIG_FILE, broken=self.cfg_broken)
@@ -113,23 +162,37 @@ class TrayApp:
         self.refresh()
 
     def apply_options(self, updates: dict) -> None:
-        autostart_before = self.cfg.autostart
+        autostart_before, echo_before = self.cfg.autostart, self.cfg.echo_cancel
         for key, value in updates.items():
             setattr(self.cfg, key, value)
         self.save_config()
-        self.apply_all()
+        echo_changed = self.cfg.echo_cancel != echo_before
+        if echo_changed:
+            self.restart_chain()  # andere Kettenstruktur; die neue Kette startet mit den gespeicherten Werten
+        else:
+            self.apply_all()
         if self.cfg.autostart != autostart_before:
             self.set_autostart(self.cfg.autostart)
-        self.update_tracking()
+        self._sync_zone()
+        self.update_tracking(restart=echo_changed)  # Nachführung hört mit Echounterdrückung auf deren Ausgang
         self.refresh()
 
+    def restart_chain(self) -> None:
+        state = "eingeschaltet" if self.cfg.echo_cancel else "ausgeschaltet"
+        try:
+            pwctl.restart_chain()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log.warning("Neustart der Kette fehlgeschlagen: %s", e)
+            return
+        self.tray.showMessage("UMA-8 Call Mic", f"Echounterdrückung {state}. Die Filterkette startet neu "
+                              "(kurze Tonpause).")
+
     def set_autostart(self, enabled: bool) -> None:
-        if enabled:
-            template = (K.REPO_DIR / "pipewire" / "uma8-callmic.desktop").read_text()
-            K.AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
-            K.AUTOSTART_FILE.write_text(template.replace("@BIN@", shutil.which("uma8-callmic") or str(K.LAUNCHER)))
-        elif K.AUTOSTART_FILE.exists():
-            K.AUTOSTART_FILE.unlink()
+        """Autostart-Datei angleichen (Einrichtung, Optionen): legt sie auch an, wenn sie fehlt."""
+        try:
+            pwctl.sync_autostart(enabled)
+        except OSError as e:
+            log.warning("Autostart nicht angepasst: %s", e)
 
     def calibrated(self, azimuth: float, elevation: float) -> None:
         self.cfg.calibrated = True
@@ -137,6 +200,8 @@ class TrayApp:
         self.cfg.calibrated_elevation = round(elevation, 1)
         self.save_config()
         self._set(steering_params(self.cfg, self.tracked))
+        self._sync_zone()  # die Sprechzone liegt um die kalibrierte Richtung
+        self._sync_options()
         self.refresh()
 
     def geometry_done(self, ran: bool, adopt: ArrayGeometry | None) -> None:
@@ -158,6 +223,12 @@ class TrayApp:
         dlg.raise_()
         dlg.activateWindow()
 
+    def _sync_options(self) -> None:
+        """Offener Optionen-Dialog: Profil und Kalibrierung neu anzeigen (Assistent, Kalibrieren nebenher)."""
+        dlg = self.dialogs.get("options")
+        if dlg is not None and dlg.isVisible():
+            dlg.sync_profile(self.cfg)
+
     def open_options(self) -> None:
         self._show("options", lambda: OptionsDialog(self.cfg, self.apply_options, self.open_geometry))
 
@@ -167,22 +238,38 @@ class TrayApp:
     def open_geometry(self) -> None:
         self._show("geometry", lambda: GeometryDialog(self.cfg.geometry(), self.geometry_done))
 
+    def open_wizard(self) -> None:
+        self._show("wizard", lambda: WorkspaceWizard(self.cfg, self.apply_profile))
+
+    def open_placement(self) -> None:
+        self._show("placement", lambda: PlacementWindow(lambda: (self.cfg, self.tracked), self.apply_profile))
+
     # --- Nachführung -----------------------------------------------------------
 
     def _apply_tracked(self, azimuth: float) -> None:
         self.tracked = azimuth
         self._set(steering_params(self.cfg, azimuth))
 
-    def update_tracking(self) -> None:
-        want = self.cfg.direction_mode == "tracking"
-        if want and self.tracker_thread is None:
-            self.tracker_capture = Capture(pwctl.raw_source(), 8, seconds=3.0)
-            tracker = Tracker(SrpPhat(self.cfg.geometry().positions()), VoiceDetector(), self._apply_tracked,
-                              initial_azimuth=self.cfg.calibrated_azimuth, center=self.cfg.center_channel)
-            self.tracker_thread = TrackerThread(self.tracker_capture, tracker)
-            self.tracker_thread.start()
-        elif not want and self.tracker_thread is not None:
+    def update_tracking(self, restart: bool = False) -> None:
+        """Nachführung nur im Modus „tracking“ und nur, solange jemand das Mikrofon nutzt (plus reflink.HOLD_S).
+        In Pausen bleibt der Strahl auf der zuletzt gefundenen Richtung; erst ein anderer Modus vergisst sie."""
+        mode = self.cfg.direction_mode == "tracking"
+        want = mode and self.track_gate.update(self.mic_in_use, time.monotonic())
+        if self.tracker_thread is not None and (restart or not want):
             self._stop_tracking()
+        if not mode:
+            self.tracked = None
+        if want and self.tracker_thread is None:
+            self.tracker_capture = open_capture(pwctl.tracking_target(self.cfg.echo_cancel), seconds=3.0)
+            start = self.cfg.calibrated_azimuth if self.tracked is None else self.tracked
+            self.tracker = Tracker(SrpPhat(self.cfg.geometry().positions()), VoiceDetector(), self._apply_tracked,
+                                   initial_azimuth=start, center=self.cfg.center_channel, zone=zone_for(self.cfg))
+            self.tracker_thread = TrackerThread(self.tracker_capture, self.tracker)
+            self.tracker_thread.start()
+
+    def _sync_zone(self) -> None:
+        if self.tracker is not None:
+            self.tracker.zone = zone_for(self.cfg)
 
     def _stop_tracking(self) -> None:
         if self.tracker_thread:
@@ -191,9 +278,10 @@ class TrayApp:
         if self.tracker_capture:
             self.tracker_capture.close()
             self.tracker_capture = None
-        self.tracked = None
+        self.tracker = None
 
     def shutdown(self) -> None:
         self._stop_tracking()
+        self.tracked = None
         for dlg in self.dialogs.values():
             dlg.close()
