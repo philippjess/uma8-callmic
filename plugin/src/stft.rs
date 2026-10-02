@@ -11,7 +11,7 @@ pub const BINS: usize = FFT_LEN / 2 + 1;
 /// Latenz in Samples, unabhängig von allen Einstellungen.
 pub const LATENCY: usize = FFT_LEN;
 /// Eingangswerte werden auf ±MAX_INPUT begrenzt. Audio ist ±1, mit der Vorverstärkung der
-/// Echounterdrückung (+24 dB) ±16; der Rest ist Datenmüll. So bleiben alle Leistungen der Stufen
+/// Echounterdrückung (+18 dB) ±8; der Rest ist Datenmüll. So bleiben alle Leistungen der Stufen
 /// (|X|² ≤ (FFT_LEN·MAX_INPUT)² ≈ 10¹², Produkte zweier Kanäle ≈ 10²⁶) weit unter f32::MAX, und
 /// kein Schätzer kann auf ∞ hängen bleiben.
 pub const MAX_INPUT: f32 = 1e3;

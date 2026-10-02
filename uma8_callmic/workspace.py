@@ -19,6 +19,7 @@ from typing import Callable
 
 import numpy as np
 
+from .constants import AEC_PRE_GAIN_DB
 from .doa import C_SOUND, SrpPhat, VoiceDetector, angle_diff, circular_mean
 
 SR = 48000
@@ -49,8 +50,8 @@ MERGE_DEG = 15.0
 TYPING_S = 5.0
 TRANSIENT_DB = 12.0
 MIN_TRANSIENT_FRAMES = 8
-#: Rohspitze, ab der die Echounterdrückung (+24 dB Vorverstärkung, Ausgang auf ±1 begrenzt) bald abschneidet
-ECHO_PEAK_MAX_DBFS = -30.0
+#: Rohspitze, ab der die Echounterdrückung (Vorverstärkung, Ausgang auf ±1 begrenzt) bald abschneidet: 6 dB Reserve
+ECHO_PEAK_MAX_DBFS = -AEC_PRE_GAIN_DB - 6.0
 #: Platzierungshinweise (Faustregeln): Abstand Sprache−Echo bzw. Sprache−Grundrauschen gut/mindestens
 SPEECH_ECHO_DB = (10.0, 3.0)
 SPEECH_NOISE_DB = (20.0, 10.0)

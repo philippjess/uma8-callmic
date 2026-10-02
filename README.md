@@ -86,7 +86,7 @@ Kalibrierung (Rechtsklick → Kalibrieren…).
 
 - Entwickler-Installation: neuen Stand holen und `./install.sh` erneut ausführen. Es beendet vorher ein laufendes
   Tray – ein altes Tray setzte sonst seine alten Werte in die neue Kette (z. B. die volle Verstärkung zusätzlich zu
-  den 24 dB vor der Echounterdrückung) – startet die Kette neu und das Tray wieder. Läuft das Tray nicht, danach
+  den 18 dB vor der Echounterdrückung) – startet die Kette neu und das Tray wieder. Läuft das Tray nicht, danach
   `uma8-callmic &` oder Startmenü.
 - Wechsel zum Paket (RPM oder Arch): erst `./uninstall.sh` (Einstellungen behalten), dann das Paket installieren und
   „UMA-8 Call Mic“ aus dem Startmenü starten; es richtet Dienst und Autostart neu ein. Liegen noch Reste von
@@ -148,7 +148,7 @@ WebRTC AEC3); ein Wechsel der Standardausgabe wird übernommen, auch mitten im A
   Anruf wecken die Kette nicht. Das erledigt ein kleiner Helfer (`uma8-callmic --ref-linker`), der mit dem
   Dienst startet und endet; er verbindet beim Start einer Aufnahme nach rund 50 ms und trennt 2 s nach ihrem
   Ende. Läuft er nicht, funktioniert das Mikrofon weiter, nur ohne Echounterdrückung.
-- „Verstärkung“ bleibt die Gesamtverstärkung; 24 dB davon liegen vor der Echounterdrückung.
+- „Verstärkung“ bleibt die Gesamtverstärkung; 18 dB davon liegen vor der Echounterdrückung.
 - Ausschalten: Optionen → „Echounterdrückung (Lautsprecher)“. Das startet die Filterkette neu (kurze
   Tonpause). Ohne Tray: `echo_cancel = false` in `~/.config/uma8-callmic/config.toml`, dann
   `systemctl --user restart uma8-callmic-chain`.
@@ -156,7 +156,7 @@ WebRTC AEC3); ein Wechsel der Standardausgabe wird übernommen, auch mitten im A
 ## Aufbau
 
 ```
-UMA-8 (7 Mikros) ─► +24 dB ─► Echounterdrückung (Referenz: Standardausgabe, nur während einer Aufnahme)
+UMA-8 (7 Mikros) ─► +18 dB ─► Echounterdrückung (Referenz: Standardausgabe, nur während einer Aufnahme)
    ─► uma8_beam (Beamforming, Hall) ─► DeepFilterNet ─┐
       └─ Roh-Weg (Mittel-Mikrofon, latenzangeglichen) ─┴► Umschalter ─► Begrenzer ─► „UMA-8 Call Mic“
 ```

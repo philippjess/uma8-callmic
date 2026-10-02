@@ -137,7 +137,7 @@ def test_ref_linker_starts_with_chain_only_with_echo_cancel(echo, monkeypatch):
 
 def test_echo_cancel_moves_gain_before_aec():
     text = render(Config(gain_db=30.0))
-    assert '"Gain (dB)" = 6 ' in text
+    assert '"Gain (dB)" = 12 ' in text
     assert "Audio/Source/Virtual" not in text  # stürzt PipeWire 1.6.9 bei Stream-Knoten ab
 
 

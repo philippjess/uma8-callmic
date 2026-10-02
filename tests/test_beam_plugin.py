@@ -80,7 +80,7 @@ def test_null_ports_default_to_off(plugin_so):
 
 
 def test_gain_can_attenuate(plugin_so):
-    """Mit Echounterdrückung liegen 24 dB schon vor dem Plugin, „Gain (dB)“ wird dann auch negativ."""
+    """Mit Echounterdrückung liegt die Vorverstärkung schon vor dem Plugin, „Gain (dB)“ wird dann auch negativ."""
     p = Plugin(plugin_so, "uma8_beam")
     h = p.d.port_range_hints[PORTS.index("Gain (dB)")]
     assert (h.lower, h.upper) == (-30.0, 60.0)

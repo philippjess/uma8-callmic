@@ -12,7 +12,7 @@ def test_all_params_cover_every_node():
     assert p["beam:Raw Extra Delay (samples)"] == float(DFN_LATENCY)
     assert p["dfn:Attenuation Limit (dB)"] == 30.0
     assert p["limit:Ceiling (dB)"] == -1.0
-    assert p["beam:Gain (dB)"] == 30.0 - AEC_PRE_GAIN_DB == 6.0
+    assert p["beam:Gain (dB)"] == 30.0 - AEC_PRE_GAIN_DB == 12.0
     assert {k.split(":")[0] for k in p} == {"beam", "dfn", "mix", "limit"}
 
 
@@ -51,10 +51,10 @@ def test_mix_params():
 
 
 def test_gain_is_split_around_echo_cancel():
-    """„Verstärkung“ bleibt die Gesamtverstärkung; mit Echounterdrückung liegen 24 dB vor der AEC."""
-    assert AEC_PRE_GAIN_DB == 24.0
+    """„Verstärkung“ bleibt die Gesamtverstärkung; mit Echounterdrückung liegen 18 dB vor der AEC."""
+    assert AEC_PRE_GAIN_DB == 18.0
     for gain in (0.0, 30.0, 60.0):
-        assert beam_gain_db(Config(gain_db=gain, echo_cancel=True)) == gain - 24.0
+        assert beam_gain_db(Config(gain_db=gain, echo_cancel=True)) == gain - 18.0
         assert beam_gain_db(Config(gain_db=gain, echo_cancel=False)) == gain
     assert processing_params(Config(gain_db=42.0, echo_cancel=False))["beam:Gain (dB)"] == 42.0
     assert -30.0 <= beam_gain_db(Config(gain_db=0.0)) and beam_gain_db(Config(gain_db=60.0)) <= 60.0  # Port-Bereich
@@ -65,7 +65,7 @@ BEFORE_PROFILE = {
     'beam:Center Channel': 0.0, 'beam:Ring 0': 1.0, 'beam:Ring 1': 6.0, 'beam:Ring 2': 5.0, 'beam:Ring 3': 4.0,
     'beam:Ring 4': 3.0, 'beam:Ring 5': 2.0, 'beam:Ring Offset (deg)': 90.0, 'beam:Radius (mm)': 43.0,
     'beam:Raw Extra Delay (samples)': 960.0, 'beam:Mode': 0.0, 'beam:Azimuth (deg)': 0.0, 'beam:Elevation (deg)': 20.0,
-    'beam:Gain (dB)': 6.0, 'beam:Dereverb': 1.0, 'beam:Dereverb Strength': 0.6, 'beam:Dereverb T60 (s)': 0.5,
+    'beam:Gain (dB)': 12.0, 'beam:Dereverb': 1.0, 'beam:Dereverb Strength': 0.6, 'beam:Dereverb T60 (s)': 0.5,
     'beam:Late Reverb': 1.0, 'beam:Min WNG (dB)': -3.0, 'dfn:Attenuation Limit (dB)': 30.0, 'limit:Ceiling (dB)': -1.0,
     'mix:Gain 1': 1.0, 'mix:Gain 2': 0.0,
 }

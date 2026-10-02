@@ -51,7 +51,7 @@ aus haben den Chip wiederholt hängen lassen und sind ausgeschlossen.
 UMA-8 (Kanal 0–6, 48 kHz)          ein PipeWire-Prozess (systemd --user: uma8-callmic-chain.service)
    │
    ▼  filter-chain „Vorverstärkung“ (nur mit Echounterdrückung)
-   │     7 × builtin linear, +24 dB ─► uma8_callmic_pre (Audio/Source/Internal, 7 Kanäle AUX0–6)
+   │     7 × builtin linear, +18 dB ─► uma8_callmic_pre (Audio/Source/Internal, 7 Kanäle AUX0–6)
    ▼  echo-cancel (WebRTC AEC3, monitor.mode)           Referenz: Monitor der Standardausgabe
    │     7 Kanäle, je ein lineares Filter ─► uma8_callmic_aec (Audio/Source/Internal, 7 Kanäle)
    │
@@ -107,7 +107,7 @@ zeitgleich mit dem DeepFilterNet-Ausgang ankommt). Beide Ausgänge werden mit
 | Ring Order 0–5 | 0–6 | Kanalindex der Ringmikrofone in Kreisreihenfolge |
 | Ring Offset | 0–359,9° | Winkel des ersten Ringmikrofons |
 | Radius | 20–60 mm | Ringradius |
-| Gain | −30–60 dB | Verstärkung beider Ausgänge (Rohsignal ist sehr leise); mit Echounterdrückung „Verstärkung“ − 24 dB, weil die Vorverstärkung davor liegt |
+| Gain | −30–60 dB | Verstärkung beider Ausgänge (Rohsignal ist sehr leise); mit Echounterdrückung „Verstärkung“ − 18 dB, weil die Vorverstärkung davor liegt |
 | Raw Extra Delay | 0–4800 Samples | Zusatzverzögerung für „Raw Out“ = gemessene Latenz von DeepFilterNet |
 | Dereverb | 0/1 | kohärenzbasierte Hallunterdrückung an/aus |
 | Dereverb Strength | 0–1 | Stärke beider Hallstufen (Untergrenze der Dämpfung, Überschätzung) |
@@ -293,7 +293,7 @@ Systemaufrufe in `run()`; alle Puffer werden in `instantiate()` angelegt,
 Neuentwürfe arbeiten auf vorhandenen Puffern. Geglättete Spektren unter
 10⁻³⁰ werden auf 0 gesetzt (keine Denormals), nicht endliche Schätzerzustände
 ebenfalls (ein ∞ bliebe sonst dauerhaft). Der Eingang wird in `Stft::push` auf
-±1000 begrenzt (Audio ist ±1, mit +24 dB Vorverstärkung ±16), nicht endliche
+±1000 begrenzt (Audio ist ±1, mit +18 dB Vorverstärkung ±8), nicht endliche
 Werte werden 0; so kann kein Schätzer überlaufen (ein einzelner riesiger Wert
 dämpfte vorher dauerhaft um 7,7 dB). Läuft ein Frame trotzdem über, wird er
 verworfen und die Schätzzustände zurückgesetzt, die Ausgabe bleibt NaN-frei. FFT über das
@@ -365,8 +365,8 @@ Aufbau, alles im selben PipeWire-Prozess, nur mit `echo_cancel = true`
 
 - **Vorverstärkung** (filter-chain): liest das UMA-8 wie sonst die Hauptkette
   (8 Kanäle, Gerätepositionen, `stream.dont-remix`, passiv), verwirft Kanal 7
-  und verstärkt die 7 Mikrofone um 24 dB. builtin `linear` klemmt „Mult“ still
-  auf ±10 (+20 dB), deshalb zwei gleiche Stufen (×3,98) je Kanal. Ausgang
+  und verstärkt die 7 Mikrofone um 18 dB (×7,94). builtin `linear` klemmt „Mult“
+  still auf ±10 (+20 dB); größere Verstärkungen teilt `gain_stages` auf gleiche Stufen auf. Ausgang
   `uma8_callmic_pre`, `Audio/Source/Internal`, `AUX0–6`.
 - **echo-cancel** mit `monitor.mode = true`: Referenz ist der Monitor der
   Standardausgabe (Stereo), verbunden aber nur während einer Aufnahme (siehe
@@ -382,7 +382,7 @@ Aufbau, alles im selben PipeWire-Prozess, nur mit `echo_cancel = true`
   (`node.latency` 480/48000) und puffert bei anderer Quantengröße selbst;
   ≈ 9 ms zusätzliche Latenz.
 - **Hauptkette** liest `uma8_callmic_aec` mit 7 Kanälen; „Gain (dB)“ von
-  `uma8_beam` = „Verstärkung“ − 24 dB. Die Einstellung „Verstärkung“ bleibt
+  `uma8_beam` = „Verstärkung“ − 18 dB. Die Einstellung „Verstärkung“ bleibt
   die Gesamtverstärkung (0–60 dB).
 
 `Audio/Source/Internal`: pipewire-pulse zeigt solche Knoten nicht (also auch
@@ -392,16 +392,19 @@ per `target.object` sind sie verbindbar und schlafen normal.
 Referenz-Stream darf keine eigene `node.group` bekommen (dann arbeitet die AEC
 nicht).
 
-Warum +24 dB: Offline mit der PipeWire-Konfiguration der AEC3 nachgerechnet
+Warum +18 dB: Offline mit der PipeWire-Konfiguration der AEC3 nachgerechnet
 (synthetischer Raum, Rohpegel mit −75 dBFS Grundrauschen): ohne Verstärkung
-ERLE 19 statt 25 dB und Sprache des Nutzers bei Gegensprechen um 14 statt
-4,4 dB gedämpft; +30 dB war nicht besser und kostet Aussteuerungsreserve.
-7 Kanäle waren nie schlechter als einer.
+ERLE 19 dB und Sprache des Nutzers bei Gegensprechen um 14 dB gedämpft, mit
++18 dB 23 dB/5,5 dB, mit +24 dB 25 dB/4,4 dB; +30 dB war nicht besser.
+7 Kanäle waren nie schlechter als einer. Am Gerät erreichte lautes Lachen am
+Platz −28,4 dBFS Rohspitze (Musik in Hörlautstärke nur −50 dBFS): mit +24 dB
+blieben bis zum Abschneiden 4,4 dB, mit +18 dB sind es 10 dB, für gut 1 dB
+weniger AEC-Leistung.
 
 Messung im echten PipeWire-Graphen (ohne Hardware: 8-kanalige Ersatzquelle,
 Referenz über eine eigene Senke, Echo = Referenz über einen Raumpfad mit
 Reflexionen und diffusem Nachhall T60 0,3 s, Rohpegel Echo −45 dBFS, Nutzer
-−50 dBFS, Rauschen −75 dBFS):
+−50 dBFS, Rauschen −75 dBFS; gemessen noch mit +24 dB Vorverstärkung):
 
 | Messung | Ergebnis |
 |---|---|
@@ -419,7 +422,7 @@ Abhilfe dafür liegt außerhalb der Kette: Lautsprecher leiser oder weiter weg.
 
 Aussteuerung: Die AEC begrenzt ihren Ausgang hart auf ±1 (0 dBFS, live mit
 einem Sinus geprüft: Vorstufe 1,98, AEC-Ausgang 1,00). Rohspitzen über
-−24 dBFS werden also abgeschnitten, und abgeschnittenes Echo kann die AEC
+−18 dBFS werden also abgeschnitten, und abgeschnittenes Echo kann die AEC
 nicht mehr linear entfernen. Mit der Standardverstärkung von 30 dB setzt der
 Begrenzer am Ende schon ab −31 dBFS Rohspitze ein; betroffen sind nur sehr
 laute Quellen nah am Array (Lautsprecher daneben, Klopfen auf den Tisch).
@@ -647,8 +650,8 @@ Kopfhörer, HDMI)?“. Richtung per SRP-PHAT über diese Frames im Band 1–6 kH
 auf 0,25° Azimut. Eindeutigkeit wie bei der Kalibrierung (Haupt- minus
 Nebenmaximum außerhalb ±30°): unter 0,05 unbrauchbar, ab 0,15 „eindeutig“.
 Beide Kanäle näher als 15° beieinander gelten als ein Lautsprecher (beide
-Nullstellen gleich). Rohspitzen über −30 dBFS: Hinweis, dass die AEC-Vorstufe
-(+24 dB, Ausgang auf ±1 begrenzt) bald abschneidet.
+Nullstellen gleich). Rohspitzen über −24 dBFS (6 dB vor dem Abschneiden): Hinweis, dass die
+AEC-Vorstufe (+18 dB, Ausgang auf ±1 begrenzt) bald abschneidet.
 
 Elevation: Die SRP allein schätzt mit Hall zu steil, weil der diffuse Anteil
 (reelle sinc-Kohärenz) am besten zu kleinen Laufzeitunterschieden passt, also zu

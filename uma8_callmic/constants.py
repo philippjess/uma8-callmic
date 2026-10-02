@@ -21,10 +21,12 @@ AEC_NODE = "uma8_callmic_aec"
 #: Referenz-Stream der Echounterdrückung; verbunden nur während einer Aufnahme (reflink.py)
 AEC_REF_NODE = "uma8_callmic_aec_ref"
 SERVICE = "uma8-callmic-chain.service"
-#: Vorverstärkung vor der Echounterdrückung. Offline mit der PipeWire-AEC3-Konfiguration gemessen (synthetischer
-#: Raum, Rohpegel ≈ −75 dBFS Grundrauschen): ohne Verstärkung ERLE 19 statt 25 dB und Sprache des Nutzers bei
-#: Gegensprechen um 14 statt 4,4 dB gedämpft; +30 dB war nicht besser und kostet Aussteuerungsreserve.
-AEC_PRE_GAIN_DB = 24.0
+#: Vorverstärkung vor der Echounterdrückung (deren Ausgang ist auf ±1 begrenzt). Offline mit der PipeWire-AEC3-
+#: Konfiguration gemessen (synthetischer Raum, Rohpegel ≈ −75 dBFS Grundrauschen): ohne Verstärkung ERLE 19 dB und
+#: Sprache des Nutzers bei Gegensprechen um 14 dB gedämpft, mit +18 dB 23 dB/5,5 dB, mit +24 dB 25 dB/4,4 dB.
+#: Am Gerät erreichte lautes Lachen am Platz −28,4 dBFS Rohspitze: mit +24 dB blieben 4,4 dB bis zum Abschneiden,
+#: mit +18 dB sind es 10 dB, für gut 1 dB weniger AEC-Leistung.
+AEC_PRE_GAIN_DB = 18.0
 
 CONFIG_FILE = Path.home() / ".config/uma8-callmic/config.toml"
 CHAIN_CONF = Path.home() / ".config/pipewire/uma8-callmic.conf"

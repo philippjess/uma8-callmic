@@ -12,7 +12,7 @@ const MAX_RAW_EXTRA: usize = 4800;
 /// Bereich von „Min WNG (dB)“; die Mitte (−3 dB) ist der Standard. Delay-and-Sum hat +8,5 dB.
 const MIN_WNG_LO: f32 = -12.0;
 const MIN_WNG_HI: f32 = 6.0;
-/// Bereich von „Gain (dB)“: negativ, wenn die Echounterdrückung davor schon verstärkt (Vorverstärkung +24 dB)
+/// Bereich von „Gain (dB)“: negativ, wenn die Echounterdrückung davor schon verstärkt (Vorverstärkung, derzeit +18 dB)
 const GAIN_LO: f32 = -30.0;
 const GAIN_HI: f32 = 60.0;
 
