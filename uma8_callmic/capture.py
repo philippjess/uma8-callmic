@@ -63,6 +63,13 @@ class Capture:
             idx = (self.written - frames + np.arange(frames)) % len(self.buf)
             return self.buf[idx].copy()
 
+    def span(self, start: int, end: int) -> np.ndarray | None:
+        """Frames [start, end) gezählt ab Aufnahmebeginn; None, wenn noch nicht oder nicht mehr im Puffer."""
+        with self.lock:
+            if not 0 <= start <= end <= self.written or self.written - start > len(self.buf):
+                return None
+            return self.buf[np.arange(start, end) % len(self.buf)].copy()
+
     def close(self) -> None:
         if self.proc.poll() is None:
             self.proc.terminate()

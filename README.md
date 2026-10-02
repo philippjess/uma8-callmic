@@ -75,8 +75,35 @@ Kalibrierung (Rechtsklick → Kalibrieren…).
 ## Bedienung
 
 - Linksklick aufs Icon: aktiv ↔ deaktiviert (Rohsignal)
-- Rechtsklick: Aktiv, Kalibrieren…, Optionen…, Beenden
+- Rechtsklick: Aktiv, Kalibrieren…, Arbeitsplatz einmessen…, Platzierung…, Optionen…, Beenden
 - Icon grün = aktiv, grau = deaktiviert, rot = Problem (Tooltip zeigt die Ursache)
+- „Automatisch nachführen“ (Optionen → Richtung) hört nur zu, solange ein Programm „UMA-8 Call Mic“ aufnimmt.
+  Ohne Anruf bleibt der Strahl, wo er zuletzt war, und die Kette schläft (Tooltip: „ruht ohne Aufnahme“).
+
+### Arbeitsplatz einmessen (optional)
+
+Für einen festen Schreibtisch mit Lautsprechern. Ohne Profil verhält sich alles wie bisher.
+
+1. Rechtsklick → **Arbeitsplatz einmessen…**
+2. **Lautsprecher:** Lautstärke wie in einem Anruf einstellen (nicht lauter), still sein, „Lautsprecher messen“.
+   Jeder Lautsprecher spielt 2,5 s Rauschen über die Standardausgabe, erst links, dann rechts; das UMA-8 wird
+   dabei direkt aufgenommen. Kommt nichts an (Lautstärke 0, Kopfhörer, HDMI als Standardausgabe), sagt der
+   Assistent das. Mit Kopfhörern: überspringen.
+3. **Sprechrichtung:** die gewohnte Kalibrierung (oder die bisherige behalten).
+4. **Tastatur** (optional): 5 s tippen. Nur zur Anzeige.
+5. **Ergebnis:** Richtungen im Polardiagramm, „Bewegungsbereich“ (wie weit du dich beim Sprechen bewegst) und
+   „Lautsprecher ausblenden (Nullstellen)“, dann Speichern.
+
+Wirkung: Die automatische Nachführung folgt nur innerhalb des Bewegungsbereichs um die kalibrierte Richtung und
+nie in Richtung eines Lautsprechers (±20°). Die Nullstellen sind aus, solange du sie nicht einschaltest: Sie
+dämpfen den Direktschall der Lautsprecher deutlich, das Echo insgesamt aber nur wenig (Reflexionen überwiegen).
+Am besten im Anruf vergleichen; der Schalter steht auch unter Optionen. „Profil löschen“ auf der ersten Seite
+des Assistenten setzt alles zurück.
+
+**Platzierung…** zeigt live, woher gerade Schall kommt, den Strahl bei 1 und 3 kHz, die Marker und die Pegel
+(deine Stimme, Grundrauschen, Lautsprecher) mit Hinweisen wie „Mikrofon näher zu dir“. „Lautsprecher neu
+messen…“ wiederholt nur die Lautsprechermessung, um Aufstellungen zu vergleichen; „Messung übernehmen“ speichert
+sie. Die Aufnahme dafür läuft nur, solange das Fenster offen ist.
 
 ## Echounterdrückung
 

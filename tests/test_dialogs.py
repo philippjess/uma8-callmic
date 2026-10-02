@@ -54,3 +54,32 @@ def test_other_dialogs_construct(app):
 
 def test_level_dbfs():
     assert abs(level_dbfs(np.full(100, 0.5)) - (-6.02)) < 0.01
+
+
+def test_options_nulls_only_with_measured_speakers(app):
+    changes = []
+    dlg = OptionsDialog(Config(), changes.append, lambda: None, meter=False)
+    assert not dlg.nulls.isEnabled() and not dlg.nulls.isChecked()
+    dlg.gain.setValue(40)
+    assert changes[-1]["null_weight_db"] == 0.0                 # ohne Profil bleibt alles aus
+    dlg.close()
+    dlg = OptionsDialog(Config(speakers=[[100.0, 5.0]], null_weight_db=15.0), changes.append, lambda: None,
+                        meter=False)
+    assert dlg.nulls.isEnabled() and dlg.nulls.isChecked()
+    dlg.nulls.setChecked(False)
+    assert changes[-1]["null_weight_db"] == 0.0
+    dlg.nulls.setChecked(True)
+    assert changes[-1]["null_weight_db"] == 15.0                # eigenes Gewicht bleibt erhalten
+    dlg.beamformer.setCurrentIndex(1)
+    assert not dlg.nulls.isEnabled()                            # nur superdirektiv
+    dlg.close()
+    dlg = OptionsDialog(Config(speakers=[[100.0, 5.0]]), changes.append, lambda: None, meter=False)
+    dlg.nulls.setChecked(True)
+    assert changes[-1]["null_weight_db"] == 10.0                # empfohlener Wert
+    dlg.close()
+
+
+def test_calibration_collects_speech_levels(app):
+    dlg = CalibrationDialog(UMA8, lambda az, el: None)
+    assert dlg.speech_levels == []
+    dlg.close()

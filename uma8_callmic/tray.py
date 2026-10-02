@@ -3,21 +3,23 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
-from . import chainconf, pwctl
+from . import chainconf, pwctl, reflink
 from . import constants as K
 from .array import ArrayGeometry
 from .capture import Capture, open_capture
 from .config import load, save
 from .dialogs import CalibrationDialog, GeometryDialog, OptionsDialog
 from .doa import SrpPhat, VoiceDetector
-from .params import all_params, steering_params
-from .tracker import Tracker, TrackerThread
+from .params import all_params, null_params, steering_params
+from .tracker import Tracker, TrackerThread, zone_for
 from .traystate import icon_state, tooltip
+from .workspace_ui import PlacementWindow, WorkspaceWizard
 
 log = logging.getLogger(__name__)
 
@@ -28,8 +30,13 @@ class TrayApp:
         res = load(K.CONFIG_FILE)
         self.cfg, self.cfg_broken, self.warnings = res.config, res.broken, list(res.warnings)
         self.tracked: float | None = None
+        self.tracker: Tracker | None = None
         self.tracker_thread: TrackerThread | None = None
         self.tracker_capture: Capture | None = None
+        #: Nimmt ein Programm von „UMA-8 Call Mic“ auf? Nur dann läuft die Nachführung (sonst hielte ihre
+        #: Aufnahme die ganze Kette samt DeepFilterNet wach, und Ton aus Videos zöge den Strahl)
+        self.mic_in_use = False
+        self.track_gate = reflink.Gate()
         self.chain_node: int | None = None
         self.dialogs: dict[str, object] = {}
         self.icons = {name: QIcon(str(K.ICON_DIR / f"{name}.svg")) for name in ("active", "inactive", "error")}
@@ -43,6 +50,8 @@ class TrayApp:
         menu.addAction(self.act_active)
         menu.addSeparator()
         menu.addAction("Kalibrieren…", self.open_calibration)
+        menu.addAction("Arbeitsplatz einmessen…", self.open_wizard)
+        menu.addAction("Platzierung…", self.open_placement)
         menu.addAction("Optionen…", self.open_options)
         menu.addSeparator()
         menu.addAction("Beenden", app.quit)
@@ -73,12 +82,13 @@ class TrayApp:
     # --- Zustand ---------------------------------------------------------------
 
     def refresh(self) -> None:
-        st = pwctl.status(self.cfg.echo_cancel)
-        try:
-            node = pwctl.find_node(pwctl.dump(), K.CAPTURE_NODE) if st.chain else None
-        except Exception:  # pw-dump hängt/fehlt: Zustand beim nächsten Durchlauf erneut prüfen
-            log.warning("pw-dump fehlgeschlagen", exc_info=True)
-            node = None
+        objs = pwctl.try_dump()  # None: pw-dump hängt/fehlt, Zustand beim nächsten Durchlauf erneut prüfen
+        if objs is None:
+            log.warning("pw-dump fehlgeschlagen")
+        st = pwctl.status(self.cfg.echo_cancel, objs or [])
+        node = pwctl.find_node(objs, K.CAPTURE_NODE) if st.chain and objs else None
+        if objs is not None:  # ohne Auskunft bleibt der letzte Stand
+            self.mic_in_use = reflink.in_use(reflink.Graph(objs))
         if node is not None and node != self.chain_node:
             self.chain_node = node
             self.apply_all()  # Kette (neu) gestartet: Live-Werte an Einstellungen angleichen
@@ -87,8 +97,11 @@ class TrayApp:
         if self.tracker_capture is not None and not self.tracker_capture.alive and not st.problem:
             # Aufnahme endet, wenn ihre Quelle verschwindet (Kette neu gestartet, Gerät ab): neu verbinden
             self.update_tracking(restart=True)
+        else:
+            self.update_tracking()
         self.tray.setIcon(self.icons[icon_state(st, self.cfg.active)])
-        self.tray.setToolTip(tooltip(st, self.cfg, self.tracked, self.warnings))
+        idle = self.cfg.direction_mode == "tracking" and self.tracker_thread is None
+        self.tray.setToolTip(tooltip(st, self.cfg, self.tracked, self.warnings, idle))
 
     def _set(self, params: dict[str, float]) -> None:
         if self.chain_node is None:
@@ -100,6 +113,15 @@ class TrayApp:
 
     def apply_all(self) -> None:
         self._set(all_params(self.cfg, self.tracked))
+
+    def apply_profile(self, updates: dict) -> None:
+        """Arbeitsplatz-Profil (Assistent, Platzierung) speichern und live setzen; auch gelöschte Nullstellen."""
+        for key, value in updates.items():
+            setattr(self.cfg, key, value)
+        self.save_config()
+        self._set({**all_params(self.cfg, self.tracked), **null_params(self.cfg, force=True)})
+        self._sync_zone()
+        self.refresh()
 
     def save_config(self) -> None:
         save(self.cfg, K.CONFIG_FILE, broken=self.cfg_broken)
@@ -134,6 +156,7 @@ class TrayApp:
             self.apply_all()
         if self.cfg.autostart != autostart_before:
             self.set_autostart(self.cfg.autostart)
+        self._sync_zone()
         self.update_tracking(restart=echo_changed)  # Nachführung hört mit Echounterdrückung auf deren Ausgang
         self.refresh()
 
@@ -160,6 +183,7 @@ class TrayApp:
         self.cfg.calibrated_elevation = round(elevation, 1)
         self.save_config()
         self._set(steering_params(self.cfg, self.tracked))
+        self._sync_zone()  # die Sprechzone liegt um die kalibrierte Richtung
         self.refresh()
 
     def geometry_done(self, ran: bool, adopt: ArrayGeometry | None) -> None:
@@ -190,6 +214,12 @@ class TrayApp:
     def open_geometry(self) -> None:
         self._show("geometry", lambda: GeometryDialog(self.cfg.geometry(), self.geometry_done))
 
+    def open_wizard(self) -> None:
+        self._show("wizard", lambda: WorkspaceWizard(self.cfg, self.apply_profile))
+
+    def open_placement(self) -> None:
+        self._show("placement", lambda: PlacementWindow(lambda: (self.cfg, self.tracked), self.apply_profile))
+
     # --- Nachführung -----------------------------------------------------------
 
     def _apply_tracked(self, azimuth: float) -> None:
@@ -197,19 +227,25 @@ class TrayApp:
         self._set(steering_params(self.cfg, azimuth))
 
     def update_tracking(self, restart: bool = False) -> None:
-        want = self.cfg.direction_mode == "tracking"
+        """Nachführung nur im Modus „tracking“ und nur, solange jemand das Mikrofon nutzt (plus reflink.HOLD_S).
+        In Pausen bleibt der Strahl auf der zuletzt gefundenen Richtung; erst ein anderer Modus vergisst sie."""
+        mode = self.cfg.direction_mode == "tracking"
+        want = mode and self.track_gate.update(self.mic_in_use, time.monotonic())
         if self.tracker_thread is not None and (restart or not want):
-            last = self.tracked
             self._stop_tracking()
-            if want:
-                self.tracked = last  # Neu verbinden: der Strahl bleibt, wo er war
+        if not mode:
+            self.tracked = None
         if want and self.tracker_thread is None:
             self.tracker_capture = open_capture(pwctl.tracking_target(self.cfg.echo_cancel), seconds=3.0)
             start = self.cfg.calibrated_azimuth if self.tracked is None else self.tracked
-            tracker = Tracker(SrpPhat(self.cfg.geometry().positions()), VoiceDetector(), self._apply_tracked,
-                              initial_azimuth=start, center=self.cfg.center_channel)
-            self.tracker_thread = TrackerThread(self.tracker_capture, tracker)
+            self.tracker = Tracker(SrpPhat(self.cfg.geometry().positions()), VoiceDetector(), self._apply_tracked,
+                                   initial_azimuth=start, center=self.cfg.center_channel, zone=zone_for(self.cfg))
+            self.tracker_thread = TrackerThread(self.tracker_capture, self.tracker)
             self.tracker_thread.start()
+
+    def _sync_zone(self) -> None:
+        if self.tracker is not None:
+            self.tracker.zone = zone_for(self.cfg)
 
     def _stop_tracking(self) -> None:
         if self.tracker_thread:
@@ -218,9 +254,10 @@ class TrayApp:
         if self.tracker_capture:
             self.tracker_capture.close()
             self.tracker_capture = None
-        self.tracked = None
+        self.tracker = None
 
     def shutdown(self) -> None:
         self._stop_tracking()
+        self.tracked = None
         for dlg in self.dialogs.values():
             dlg.close()

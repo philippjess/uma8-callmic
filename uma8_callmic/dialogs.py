@@ -15,12 +15,19 @@ from .capture import Capture, open_capture
 from .config import Config
 from .doa import SrpPhat, VoiceDetector
 from .geometry import check as check_geometry
+from .params import NULL_WEIGHT_DB
 from .pwctl import raw_target
+from .workspace import band_level_dbfs
 
 DIRECTIONS = [("Kalibriert", "calibrated"), ("Manuell", "manual"),
               ("Automatisch nachführen", "tracking"), ("Alle Richtungen", "omni")]
 BEAMFORMERS = [("Superdirektiv", "superdirective"), ("Delay-and-Sum (zum Vergleich)", "delay_and_sum")]
 BLOCK = 9600  # 0,2 s
+NULLS_TEXT = "Lautsprecher ausblenden (Nullstellen)"
+NULLS_TOOLTIP = ("Richtet Nullstellen des Strahls auf die eingemessenen Lautsprecher. Das dämpft ihren Direktschall "
+                 "(1–4 kHz etwa 5–11 dB), das Echo insgesamt aber nur wenig (im simulierten Raum 0,3–1 dB), weil "
+                 "Reflexionen überwiegen. Die Echounterdrückung bleibt die Hauptsache. Am besten im Anruf an und aus "
+                 "vergleichen.")
 
 
 def level_dbfs(block: np.ndarray) -> float:
@@ -105,6 +112,13 @@ class OptionsDialog(QDialog):
                              "selbst hört. Umschalten startet die Filterkette neu (kurze Tonpause).")
         self.echo.setChecked(cfg.echo_cancel)
         form.addRow("", self.echo)
+        self.nulls = QCheckBox(NULLS_TEXT)
+        self.nulls.setToolTip(NULLS_TOOLTIP if cfg.speakers else "Erst Lautsprecher einmessen (Tray-Menü → "
+                              "Arbeitsplatz einmessen…).")
+        self.nulls.setChecked(cfg.null_weight_db > 0)
+        self.has_speakers = bool(cfg.speakers)
+        self.null_weight_on = cfg.null_weight_db if cfg.null_weight_db > 0 else NULL_WEIGHT_DB
+        form.addRow("", self.nulls)
         self.autostart = QCheckBox("Beim Login starten")
         self.autostart.setChecked(cfg.autostart)
         form.addRow("", self.autostart)
@@ -119,7 +133,7 @@ class OptionsDialog(QDialog):
         for signal in (self.direction.currentIndexChanged, self.manual.valueChanged,
                        self.beamformer.currentIndexChanged, self.dereverb.toggled, self.late.toggled,
                        self.strength.valueChanged, self.t60.valueChanged, self.noise.valueChanged,
-                       self.gain.valueChanged, self.echo.toggled, self.autostart.toggled):
+                       self.gain.valueChanged, self.echo.toggled, self.nulls.toggled, self.autostart.toggled):
             signal.connect(self._changed)
         self._update_enabled()
         self.capture = None
@@ -135,6 +149,9 @@ class OptionsDialog(QDialog):
         self.beamformer.setEnabled(self.direction.currentData() != "omni")
         self.strength.setEnabled(self.dereverb.isChecked() or self.late.isChecked())
         self.t60.setEnabled(self.late.isChecked())
+        # Nullstellen wirken nur im superdirektiven Strahl
+        self.nulls.setEnabled(self.has_speakers and self.direction.currentData() != "omni"
+                              and self.beamformer.currentData() == "superdirective")
 
     def _changed(self, *_):
         updates = {
@@ -148,6 +165,7 @@ class OptionsDialog(QDialog):
             "noise_reduction_db": float(self.noise.value()),
             "gain_db": float(self.gain.value()),
             "echo_cancel": self.echo.isChecked(),
+            "null_weight_db": self.null_weight_on if self.nulls.isChecked() else 0.0,
             "autostart": self.autostart.isChecked(),
         }
         self.manual_label.setText(f"{updates['manual_azimuth']:.0f}°")
@@ -247,11 +265,14 @@ class CalibrationDialog(_RecordingDialog):
                          "dann 5 Sekunden normal sprechen.", parent)
         self.geometry, self.on_accept = geometry, on_accept
         self.result: tuple[float, float] | None = None
+        #: Rohpegel der Sprachblöcke (Sprachband, Mittel-Mikrofon) für das Arbeitsplatz-Profil
+        self.speech_levels: list[float] = []
 
     def start(self):
         self.estimator = SrpPhat(self.geometry.positions())
         self.vad = VoiceDetector()
         self.results = []
+        self.speech_levels = []
         self.result = None
         self.info.setText("Bitte still sein …")
         self._begin(3.0)
@@ -272,6 +293,7 @@ class CalibrationDialog(_RecordingDialog):
             self.info.setText("Jetzt normal sprechen …")
         if self.ticks > self.QUIET_TICKS and speech:
             self.results.append(self.estimator.estimate(block[:, :7]))
+            self.speech_levels.append(band_level_dbfs(center))
         if self.ticks >= total:
             self._finish()
             outcome = evaluate(self.results)

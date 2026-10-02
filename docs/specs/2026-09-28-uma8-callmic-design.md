@@ -69,9 +69,10 @@ uma8-callmic --ref-linker (im selben Dienst, nur mit Echounterdrückung): verbin
 
 Tray-Programm (Python/PySide6)
    ├─ zeigt Zustand, schaltet um (pw-cli set-param, live)
-   ├─ Optionen, Kalibrierung, Kanalzuordnung
+   ├─ Optionen, Kalibrierung, Kanalzuordnung, Arbeitsplatz-Profil, Platzierung
    └─ Nachführung: liest die 7 Kanäle hinter der Echounterdrückung (ohne sie:
-      die 8 Kanäle des UMA-8) parallel mit, setzt „Azimuth“ live
+      die 8 Kanäle des UMA-8) parallel mit, setzt „Azimuth“ live – nur während
+      ein Programm „UMA-8 Call Mic“ aufnimmt
 ```
 
 Grundsatz: Das Tray-Programm ist nie im Tonweg. Fällt es aus, läuft der Ton
@@ -112,6 +113,8 @@ zeitgleich mit dem DeepFilterNet-Ausgang ankommt). Beide Ausgänge werden mit
 | Dereverb T60 | 0,1–1,5 s | angenommene Nachhallzeit des Raums (nur „Late Reverb“) |
 | Late Reverb | 0/1 | späten Nachhall zusätzlich über das Abklingmodell dämpfen |
 | Min WNG | −12–+6 dB | Untergrenze des White-Noise-Gains des superdirektiven Beams (Standard −3 dB) |
+| Null 1/2 Azimuth, Null 1/2 Elevation | 0–360°, 0–90° | feste Störrichtungen (Lautsprecher), Bezugssystem wie Azimuth; ein Lautsprecher: beide gleich |
+| Null Weight | 0–40 dB | Gewicht der Nullstellen, 0 = aus (Standard), empfohlen 10; nur superdirektiv (Komponente 5) |
 
 Namen und Reihenfolge der Ports sind Schnittstelle (die PipeWire-Konfiguration
 nutzt die Namen); neue Controls kommen nur hinten dazu.
@@ -454,12 +457,12 @@ Bekannte Nachteile:
   folgt mit Resampling); läuft dabei Musik, ist ein kurzer Aussetzer auf den
   Lautsprechern denkbar (nicht gemessen, mit dauerhaft verbundener Referenz
   passierte dasselbe beim Start jeder Wiedergabe).
-- Nachführung: Der Tracker liest `uma8_callmic_aec` dauerhaft und hält damit
-  UMA-8, AEC und Hauptkette samt DeepFilterNet wach (live: alles „running“,
-  Kettenprozess 6,8 %). Ohne Anruf hört er die Lautsprecher jetzt ungefiltert,
-  Sprache aus Videos kann den Strahl dann zum Lautsprecher ziehen; im Anruf ist
-  sie entfernt, und nach ≈ 1 s eigener Sprache folgt der Strahl wieder dem
-  Nutzer.
+- Nachführung: Las der Tracker `uma8_callmic_aec` dauerhaft, hielt er UMA-8,
+  AEC und Hauptkette samt DeepFilterNet wach (live: alles „running“,
+  Kettenprozess 6,8 %), und ohne Anruf zog Sprache aus Videos den Strahl zum
+  Lautsprecher. Deshalb nimmt er nur noch auf, solange ein Programm
+  `uma8_callmic` aufnimmt (Komponente 5, „Nachführung nur während einer
+  Aufnahme“).
 - Nur Ton auf der Standardausgabe wird entfernt. Gibt das Anruf-Programm auf
   einem anderen Gerät aus, bleibt dessen Echo.
 - Die eigene AEC der Anruf-Programme darf an bleiben; sie findet kaum noch
@@ -486,10 +489,13 @@ Module:
 | `doa.py` | Richtungsschätzung: SRP-PHAT über 72 Azimuth- × 4 Elevationswerte, Sprachaktivitätserkennung (Energie + spektrale Flachheit) |
 | `geometry.py` | Kanalzuordnung und Radius aus Raumrauschen: Kohärenzmatrix, Mittel-Mikrofon = höchste mittlere Kohärenz, Ringreihenfolge und Radius per Fit an sinc(k·d) |
 | `reflink.py` | Echo-Referenz nur während einer Aufnahme verbinden (`uma8-callmic --ref-linker`, gestartet per `context.exec` der Kette): `pw-dump --monitor` lesen, Monitor der Standardausgabe per `pw-link` verbinden/trennen; Entscheidungslogik ohne PipeWire testbar |
-| `tracker.py` | Nachführung: alle 0,2 s DOA bei Sprache, Median über 1 s, Hysterese 15°, setzt Azimuth. Hört mit Echounterdrückung auf `uma8_callmic_aec` (7 Kanäle): Im Anruf ist Sprache aus den Lautsprechern dort entfernt, der Strahl folgt dann nicht dem Lautsprecher; ohne Anruf ist die Referenz getrennt (im Test erkannte die Sprachaktivität Lautsprecher-Sprache vor der AEC in 39 von 43 Blöcken, dahinter in 3). Kalibrierung und Kanalzuordnung lesen weiter das UMA-8 direkt. Endet die Aufnahme (Kette neu gestartet), verbindet das Tray neu |
+| `tracker.py` | Nachführung: alle 0,2 s DOA bei Sprache, Median über 1 s, Hysterese 15°, setzt Azimuth. Mit Arbeitsplatz-Profil nur Schätzungen in der Sprechzone und nicht bei den Lautsprechern (`Zone`). Hört mit Echounterdrückung auf `uma8_callmic_aec` (7 Kanäle): Im Anruf ist Sprache aus den Lautsprechern dort entfernt, der Strahl folgt dann nicht dem Lautsprecher; ohne Anruf ist die Referenz getrennt (im Test erkannte die Sprachaktivität Lautsprecher-Sprache vor der AEC in 39 von 43 Blöcken, dahinter in 3). Kalibrierung und Kanalzuordnung lesen weiter das UMA-8 direkt. Endet die Aufnahme (Kette neu gestartet), verbindet das Tray neu |
 | `chainconf.py` | erzeugt `uma8-callmic.conf` aus Vorlage und Einstellungen |
-| `tray.py` | Icon, Menü, Umschalten, Zustandsabfrage alle 2 s |
+| `tray.py` | Icon, Menü, Umschalten, Zustandsabfrage alle 2 s (ein `pw-dump` je Durchlauf); Nachführung nur während einer Aufnahme |
 | `dialogs.py` | Optionen, Kalibrierung, Kanalzuordnung |
+| `workspace.py` | Arbeitsplatz-Profil ohne GUI: Testsignal, Ablauf und Auswertung der Lautsprechermessung, Tastatur, Pegel, Live-Auswertung, Platzierungshinweise |
+| `beampattern.py` | Richtcharakteristik des Plugins in numpy (Entwurf wie `beam.rs`) für die Platzierungsansicht |
+| `workspace_ui.py` | Assistent „Arbeitsplatz einmessen…“, Platzierungsansicht, Polardiagramm (QPainter) |
 
 Tray-Zustände:
 
@@ -500,7 +506,8 @@ Tray-Zustände:
 | rot | Problem: Gerät fehlt, falsche Firmware, Dienst läuft nicht, DeepFilterNet fehlt, Echounterdrückung nicht geladen; Details im Tooltip |
 
 Linksklick = umschalten. Rechtsklick-Menü: ☑ Aktiv · Kalibrieren… ·
-Optionen… · Beenden (nur Tray; Dienst läuft weiter).
+Arbeitsplatz einmessen… · Platzierung… · Optionen… · Beenden (nur Tray;
+Dienst läuft weiter).
 
 Optionen:
 
@@ -514,6 +521,8 @@ Optionen:
 - Verstärkung: dB-Regler mit Pegelanzeige
 - Echounterdrückung (Lautsprecher), Standard an; Umschalten startet die Kette
   neu
+- Lautsprecher ausblenden (Nullstellen), Standard aus; nur mit eingemessenen
+  Lautsprechern und superdirektivem Strahl wählbar, live (Komponente 5)
 - Beim Login starten
 
 Kalibrierung: Countdown, 5 s normal sprechen mit Pegelanzeige, SRP-PHAT über
@@ -529,7 +538,147 @@ Zuordnung vor; über die Optionen jederzeit wiederholbar. Drehung und Spiegelung
 sind unerheblich, weil Kalibrierung und Nachführung im selben Bezugssystem
 arbeiten.
 
-### 5. Installation
+### 5. Arbeitsplatz-Profil (Assistent, Platzierung)
+
+Für einen festen Schreibtisch: Lautsprecher und Tastatur haben feste
+Richtungen, nur der Nutzer bewegt sich. Anlass ist Philipps Platz (49"-32:9-
+Bildschirm, gebogen, ≈ 90 cm entfernt, Stereo-Lautsprecher unter den
+Bildschirmrändern, geschätzt ±100° neben dem Sprecher und 0–10° hoch;
+Mikrofon zwischen Tastatur und Bildschirm, die Tastatur also in Sprechrichtung,
+nur tiefer). Alles ist optional: Ohne Profil sind Kettenkonfiguration,
+Live-Werte und Nachführung genau wie vorher (Test
+`test_no_profile_leaves_params_and_chain_unchanged` vergleicht mit den
+Controls vor dem Profil).
+
+Gespeichert in `config.toml`:
+
+| Schlüssel | Bedeutung |
+|---|---|
+| `speakers` | 0–2 Lautsprecherrichtungen `[[Azimut, Elevation], …]`, Bezugssystem wie `calibrated_azimuth` |
+| `speaker_levels_dbfs` | Rohpegel je Lautsprecher bei der Messung (Sprachband, Mittel-Mikrofon) |
+| `keyboard` | Tastaturrichtung `[Azimut, Elevation]` oder leer, nur Anzeige |
+| `null_weight_db` | Nullstellen auf die Lautsprecher, 0 = aus (Standard), eingeschaltet 10 |
+| `talker_zone_deg` | Sprechzone ±Grad um `calibrated_azimuth`, 180 = unbeschränkt (Standard) |
+| `noise_floor_dbfs`, `speech_level_dbfs` | Grundrauschen und Sprachpegel beim Einmessen; fehlt der Schlüssel, nicht gemessen |
+
+Alle Pegel sind Rohpegel des Mittel-Mikrofons im Sprachband 100 Hz – 8 kHz,
+für Stimme, Lautsprecher und Grundrauschen gleich gerechnet (Hann-Frames,
+Leistung im Band), damit ihre Abstände vergleichbar sind.
+
+**Lautsprecher einmessen** (`workspace.SpeakerSweep`, GUI-frei). Testsignal je
+Kanal: rosa Rauschen 80 Hz – 16 kHz, 2,5 s, −23 dBFS RMS (etwa Sprache in einem
+Anruf), 50 ms Rampen, als Stereo-WAV (16 bit) mit stummem zweitem Kanal.
+Wiedergabe mit `pw-play` ohne Ziel, also auf der Standardausgabe (im eigenen
+Test-Daemon ohne Geräte geprüft: Datei erkannt, `media.name` gesetzt).
+Gleichzeitig nimmt `pw-record` das UMA-8 direkt auf (8 Kanäle, Kanalpositionen
+wie die Kette, ohne Ausweichen): vor der Echounterdrückung, die genau dieses
+Signal entfernen würde. Ablauf: 1 s Grundrauschen, Stoß links, 0,8 s Pause,
+Stoß rechts, 0,8 s; Start und Ende jedes Stoßes in Samples der Aufnahme
+(`Capture.span` liest absolut, ohne Wettlauf mit dem Lesethread).
+
+Auswertung je Stoß (`analyse_speakers`): Frames (1024, Hop 512) vom Start von
+`pw-play` bis 0,3 s nach seinem Ende, die im Band 1–6 kHz mindestens 10 dB über
+dem Grundrauschen und höchstens 6 dB unter ihrem Median liegen (nimmt Anlauf und
+Nachhall nach dem Stoß heraus); mindestens 40 Frames, sonst „am Mikrofon nichts
+zu hören. Lautstärke an? Ist die Standardausgabe dieser Lautsprecher (nicht
+Kopfhörer, HDMI)?“. Richtung per SRP-PHAT über diese Frames im Band 1–6 kHz
+(darunter trennt das 86-mm-Array kaum), Gitter 5° × 5 Elevationen, verfeinert
+auf 0,25° Azimut. Eindeutigkeit wie bei der Kalibrierung (Haupt- minus
+Nebenmaximum außerhalb ±30°): unter 0,05 unbrauchbar, ab 0,15 „eindeutig“.
+Beide Kanäle näher als 15° beieinander gelten als ein Lautsprecher (beide
+Nullstellen gleich). Rohspitzen über −30 dBFS: Hinweis, dass die AEC-Vorstufe
+(+24 dB, Ausgang auf ±1 begrenzt) bald abschneidet.
+
+Elevation: Die SRP allein schätzt mit Hall zu steil, weil der diffuse Anteil
+(reelle sinc-Kohärenz) am besten zu kleinen Laufzeitunterschieden passt, also zu
+el → 90°. `elevation_fit` passt deshalb je Bin die Kreuzspektren der 21 Paare
+als α·d(el) + β·Γ an (α, β reell) und nimmt die Elevation mit dem kleinsten
+Rest. Raumsimulation (Raum aus `tools/eval_nulls.py`, vier Lautsprecher
+0,55–0,8 m entfernt, wahre Elevation 3–8°, ohne Tisch):
+
+| T60 | Azimutfehler | Elevation nur SRP | Elevation mit Fit |
+|---|---|---|---|
+| ohne Hall | 0° | wahr (2,5-°-Raster) | wahr |
+| 0,3 s | ≤ 0,75° | 10–20° | 10–12,5° |
+| 0,45 s | ≤ 0,75° | 12,5–22,5° | 10–17,5° |
+| 0,7 s | ≤ 0,5° | 17,5–25° | 10–20° |
+
+Der Rest kommt vermutlich großteils von der Bodenreflexion, die ein Array auf
+dem Tisch nicht sieht. Die Elevation zählt für die Nullstellen: Mit 12,5° statt
+5° dämpfen sie den Direktschall (1–4 kHz, Modell, ideale Mikrofone) um 19–26
+statt 25–29 dB gegenüber ohne Nullstellen, mit 25° nur noch um 10–17 dB.
+
+**Sprechrichtung:** die vorhandene Kalibrierung (`CalibrationDialog`), die
+dabei zusätzlich den Pegel der Sprachblöcke festhält (Median →
+`speech_level_dbfs`). Eine bestehende Kalibrierung kann bleiben.
+
+**Tastatur** (optional): 5 s tippen; Frames 512 im Band 2–7 kHz, die mindestens
+12 dB über dem 30. Perzentil liegen (Anschläge), SRP-PHAT wie oben. Nur Anzeige:
+Die Tastatur liegt in Sprechrichtung und lässt sich nicht ausblenden, das
+Tippen dämpft DeepFilterNet.
+
+**Ergebnis und Speichern:** Polardiagramm, Richtungen relativ zum Sprecher,
+Hinweise (Lautsprecher in Sprechrichtung), „Bewegungsbereich“ (±15–90° oder
+unbeschränkt), „Lautsprecher ausblenden (Nullstellen)“ (aus; Tooltip nennt
+Nutzen und Grenze: Direktschall 1–4 kHz −5…−11 dB, Echo insgesamt im simulierten
+Raum nur −0,3…−1 dB, weil Reflexionen überwiegen; im Anruf vergleichen).
+Speichern schreibt `config.toml` und die Kettenkonfiguration und setzt alle
+Controls live, einschließlich „Null Weight“ 0 nach „Profil löschen“. Die
+Null-Controls stehen nur mit eingemessenen Lautsprechern in der
+Kettenkonfiguration; das Plugin rechnet mit Gewicht 0 bitgleich wie ohne.
+
+**Nachführung mit Profil** (`tracker.Zone`): Schätzungen außerhalb ±Sprechzone
+um die kalibrierte Richtung und innerhalb ±20° (Azimut) um einen Lautsprecher
+zählen nicht. Ein Lautsprecher näher als 30° an der Sprechrichtung wird nicht
+ausgeschlossen (sonst fände die Nachführung den Sprecher nie), der Assistent
+warnt dann. Die Zone folgt einer neuen Kalibrierung.
+
+**Nachführung nur während einer Aufnahme** (für alle, nicht nur mit Profil):
+Das Tray liest alle 2 s ein `pw-dump` (vorher zwei) und prüft mit
+`reflink.in_use` wie der Referenz-Helfer, ob ein Knoten hinter `uma8_callmic`
+läuft. Nur dann nimmt die Nachführung auf; endet die Aufnahme, stoppt sie nach
+`reflink.HOLD_S` (2 s, beim 2-s-Takt also nach 2–4 s). Der Strahl bleibt auf der
+zuletzt gefundenen Richtung, auch über einen Neustart der Kette; erst ein
+anderer Richtungsmodus vergisst sie. Antwortet `pw-dump` nicht, bleibt der
+letzte Zustand. Tooltip: „Richtung: automatisch (…°), ruht ohne Aufnahme“. Das
+Pegelmeter im Optionen-Dialog nimmt `uma8_callmic` auf und weckt die
+Nachführung daher mit.
+
+**Platzierung…** (`PlacementWindow`): eigene Rohaufnahme, nur solange das
+Fenster offen ist; alle 0,2 s:
+
+- Schallkarte: SRP-PHAT (300 Hz – 6 kHz, Maximum über die Elevationen,
+  geglättet 0,5) über den Azimut, normiert; Deckkraft nach Abstand zum
+  Grundrauschen.
+- Strahl bei 1 und 3 kHz aus `beampattern.py`, aus genau den Controls, die das
+  Plugin bekommt (`params.all_params`), für Schall unter der
+  Lautsprecher-Elevation (ohne Lautsprecher: Blickrichtung). Abgleich: mit
+  `tools/eval_nulls.py` auf 0,01 dB, mit dem Plugin (Sinus auf einem Bin bzw.
+  3 kHz, ladspa_host) auf 0,15 dB über −30 dB und 1,5 dB in tiefen Nullstellen
+  (f32).
+- Marker: du (mit Sprechzone), Lautsprecher (mit ±20°-Ausschluss), Tastatur,
+  aktueller Strahl (nachgeführt, kalibriert oder manuell).
+- „Array-Sicht“ (0° rechts, gegen den Uhrzeigersinn) oder „aus deiner Sicht“
+  (Standard, sobald kalibriert): gedreht, sodass du unten bist, und gespiegelt,
+  falls der zuerst gemessene, linke Lautsprecher sonst rechts läge.
+- Pegel: Stimme (Median der Sprachblöcke aus der Sprechzone, ohne Zone ±45° um
+  die Kalibrierung, nie aus Lautsprecherrichtung), Grundrauschen
+  (10. Perzentil der letzten 10 s), Lautsprecher (letzte Messung). Hinweise
+  (Faustregeln): Stimme − Lautsprecher ≥ 10 dB gut, 3–10 dB „Mikrofon näher zu
+  dir oder weiter weg von den Lautsprechern“, darunter zusätzlich „Lautsprecher
+  leiser“ (Grund: die AEC dämpft bei Gegensprechen die Stimme umso mehr, je
+  lauter das Echo, Komponente 3: Echo 5 dB unter der Stimme → Stimme −8 dB);
+  Stimme − Grundrauschen ≥ 20 dB gut, 10–20 dB „Mikrofon näher zu dir“.
+- „Lautsprecher neu messen…“ (erst nach Bestätigung der Lautstärke-Warnung)
+  nutzt dieselbe Aufnahme; das Ergebnis erscheint sofort im Diagramm und wird
+  mit „Messung übernehmen“ gespeichert.
+
+Grenzen: Der Lautsprecherpegel gilt für die Lautstärke bei der Messung. Die
+Hinweise sind Faustregeln. Mit DSP-Firmware ungetestet am echten Gerät; alles
+ist mit simulierten ebenen Wellen, Raumimpulsantworten und einer simulierten
+Wiedergabe getestet (`tests/desksim.py`), nie mit echter Wiedergabe.
+
+### 6. Installation
 
 `install.sh` (ohne root):
 
@@ -557,6 +706,8 @@ arbeiten.
 | Referenz-Helfer beendet | Mikrofon läuft weiter, bei neuen Anrufen ohne Echounterdrückung; startet mit dem Dienst neu (Meldungen im Journal des Dienstes) |
 | Kaputte config.toml | Standardwerte, Hinweis im Tray; vor dem nächsten Speichern wird die kaputte Datei als `config.toml.broken` gesichert |
 | `pw-cli` schlägt fehl | Fehler im Tooltip und im Log (`~/.local/state/uma8-callmic/log`) |
+| Lautsprechermessung: nichts am Mikrofon | Meldung je Kanal (Lautstärke, Standardausgabe prüfen); ein gehörter Kanal reicht für ein Profil |
+| Lautsprechermessung: `pw-play` scheitert oder hängt | Meldung mit Rückgabewert; nach 8,5 s abgebrochen |
 
 ## Tests
 
@@ -599,6 +750,15 @@ Python (pytest):
   Klassen, Kanalzahlen und -positionen, `aec.args`, Gesamtverstärkung jeder
   Vorverstärkungsstrecke, `null`-Eingang nur ohne Echounterdrückung,
   Referenz ohne Autoconnect, Helfer per `context.exec` nur mit ihr
+- Arbeitsplatz-Profil: Konfiguration (Round-Trip, Validierung, ohne Profil
+  dieselben Controls wie vorher), Nullstellen-Controls, Zone und Ausschluss der
+  Nachführung, Tray mit Attrappen (Nachführung nur während einer Aufnahme,
+  Richtung bleibt, Profil live), Lautsprechermessung an ebenen Wellen (≤ 1°),
+  in der Raumsimulation (≤ 3°) und als ganzer Ablauf mit simulierter Wiedergabe
+  (`tests/desksim.py`: Testuhr, Aufnahme-Attrappe, `pw-play`-Attrappe, die die
+  WAV-Datei liest und als ebene Welle einspielt), Fehlerfälle, Tastatur,
+  Hinweise, `beampattern.py` gegen Modell und Plugin, Assistent und
+  Platzierungsansicht offscreen
 - `reflink.py`: Entscheidungen auf aufgezeichneten pw-dump-Graphen der
   Testkette (Musik ohne Anruf, Anruf beginnt, verbunden, Anruf vorbei mit
   laufender Kette), Wartezeit, Wechsel der Standardausgabe, Neustart mitten im

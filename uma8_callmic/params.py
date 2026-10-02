@@ -8,6 +8,10 @@ OMNI_MODE = 1.0
 #: Untergrenze des White-Noise-Gains des superdirektiven Beams. −3 dB war im Raum-Test mit ±1 dB
 #: Empfindlichkeitsstreuung der Mikrofone am besten (tools/eval_dereverb.py, Design-Dokument).
 MIN_WNG_DB = -3.0
+#: Empfohlenes „Null Weight (dB)“ der Nullstellen auf die Lautsprecher (tools/eval_nulls.py)
+NULL_WEIGHT_DB = 10.0
+NULL_KEYS = ("beam:Null 1 Azimuth (deg)", "beam:Null 1 Elevation (deg)", "beam:Null 2 Azimuth (deg)",
+             "beam:Null 2 Elevation (deg)", "beam:Null Weight (dB)")
 
 
 def geometry_params(cfg: Config) -> dict[str, float]:
@@ -51,10 +55,21 @@ def processing_params(cfg: Config) -> dict[str, float]:
     }
 
 
+def null_params(cfg: Config, force: bool = False) -> dict[str, float]:
+    """Nullstellen auf die gemessenen Lautsprecher (gleiches Bezugssystem wie „Azimuth (deg)“), ein Lautsprecher
+    auf beide. Ohne gemessene Lautsprecher keine Controls, Kette und Live-Werte bleiben wie ohne Profil;
+    `force` liefert dann „aus“ (Profil gelöscht, das laufende Plugin hat noch Nullstellen)."""
+    if not cfg.speakers:
+        return dict.fromkeys(NULL_KEYS, 0.0) if force else {}
+    (az1, el1), (az2, el2) = cfg.speakers[0], cfg.speakers[-1]
+    return dict(zip(NULL_KEYS, (float(az1) % 360.0, float(el1), float(az2) % 360.0, float(el2),
+                                float(cfg.null_weight_db))))
+
+
 def mix_params(active: bool) -> dict[str, float]:
     return {"mix:Gain 1": 1.0 if active else 0.0, "mix:Gain 2": 0.0 if active else 1.0}
 
 
 def all_params(cfg: Config, tracked_azimuth: float | None = None) -> dict[str, float]:
     return {**geometry_params(cfg), **steering_params(cfg, tracked_azimuth),
-            **processing_params(cfg), **mix_params(cfg.active)}
+            **processing_params(cfg), **null_params(cfg), **mix_params(cfg.active)}

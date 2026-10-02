@@ -3,7 +3,7 @@ import numpy as np
 from uma8_callmic.doa import DoaResult
 import time
 
-from uma8_callmic.tracker import Tracker, TrackerThread
+from uma8_callmic.tracker import Tracker, TrackerThread, Zone, zone_for
 
 
 class FakeEstimator:
@@ -82,3 +82,40 @@ def test_tracker_works_with_seven_channels():
     for _ in range(3):
         t.feed(np.zeros((9600, 7)))
     assert applied == [90.0]
+
+
+def test_zone_accepts_inside_and_excludes_speakers():
+    z = Zone(center=200.0, half_width=40.0, avoid=(110.0, 230.0))
+    assert z.accepts(200.0) and z.accepts(170.0) and not z.accepts(155.0) and not z.accepts(245.0)
+    assert not z.accepts(215.0) and z.accepts(209.0)      # ±20° um den Lautsprecher bei 230°
+    free = Zone(avoid=(100.0,))
+    assert free.accepts(0.0) and free.accepts(300.0) and not free.accepts(115.0)
+
+
+def test_zone_for_config():
+    from uma8_callmic.config import Config
+
+    assert zone_for(Config()) is None                                   # kein Profil: wie bisher
+    assert zone_for(Config(talker_zone_deg=40.0)) is None               # ohne Kalibrierung keine Mitte
+    z = zone_for(Config(calibrated=True, calibrated_azimuth=200.0, talker_zone_deg=40.0))
+    assert z == Zone(200.0, 40.0, ())
+    z = zone_for(Config(calibrated=True, calibrated_azimuth=200.0, speakers=[[100.0, 5.0], [215.0, 5.0]]))
+    assert z.half_width == 180.0 and z.avoid == (100.0,)               # Lautsprecher in Sprechrichtung zählt nicht
+    assert zone_for(Config(speakers=[[100.0, 5.0]])).avoid == (100.0,)
+
+
+def test_tracker_ignores_estimates_outside_zone():
+    applied = []
+    est = FakeEstimator([DoaResult(a, 20, 0.3, 0.5) for a in (110, 112, 108, 300, 300, 300, 205, 210, 207)])
+    t = Tracker(est, AlwaysSpeech(), applied.append, initial_azimuth=180.0,
+                zone=Zone(200.0, 40.0, avoid=(110.0,)))
+    for _ in range(9):
+        t.feed(np.zeros((9600, 8)))
+    # Lautsprecher und Richtung außerhalb verworfen, erst die Sprecher-Schätzungen bewegen den Strahl
+    assert len(t.history) == 3 and len(applied) == 1 and abs(applied[0] - 207.3) < 0.1
+    t.zone = None                                          # Profil gelöscht: wieder alles
+    t.history.clear()
+    t.estimator = FakeEstimator([DoaResult(300, 20, 0.3, 0.5)] * 3)
+    for _ in range(3):
+        t.feed(np.zeros((9600, 8)))
+    assert applied[-1] == 300.0

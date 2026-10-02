@@ -171,3 +171,30 @@ def test_restart_chain_only_restarts_running_service(monkeypatch):
     monkeypatch.setattr(pwctl, "_run", lambda args, timeout=5.0: calls.append(args))
     pwctl.restart_chain()
     assert calls == [["systemctl", "--user", "try-restart", "--no-block", pwctl.K.SERVICE]]
+
+
+def test_status_uses_given_objects(monkeypatch):
+    """Das Tray liest pw-dump einmal je Durchlauf und reicht die Objekte weiter."""
+    monkeypatch.setattr(pwctl, "service_active", lambda: True)
+    monkeypatch.setattr(pwctl, "dump", lambda: pytest.fail("kein zweites pw-dump"))
+    st = pwctl.status(echo_cancel=False, objs=OBJS)
+    assert st.device == "raw" and st.chain
+
+
+def test_try_dump_returns_none_on_failure(monkeypatch):
+    def broken():
+        raise RuntimeError("weg")
+    monkeypatch.setattr(pwctl, "dump", broken)
+    assert pwctl.try_dump() is None
+
+
+def test_default_sink_description():
+    meta = {"id": 40, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"},
+            "metadata": [{"subject": 0, "key": "default.audio.sink",
+                          "value": {"name": "alsa_output.pci-0000_0c_00.4.analog-stereo"}}]}
+    sink = {"id": 41, "type": "PipeWire:Interface:Node",
+            "info": {"props": {"node.name": "alsa_output.pci-0000_0c_00.4.analog-stereo",
+                               "node.description": "Lautsprecher (Starship/Matisse)"}}}
+    assert pwctl.default_sink_description(OBJS + [meta, sink]) == "Lautsprecher (Starship/Matisse)"
+    assert pwctl.default_sink_description(OBJS + [meta]) == "alsa_output.pci-0000_0c_00.4.analog-stereo"
+    assert pwctl.default_sink_description(OBJS) is None

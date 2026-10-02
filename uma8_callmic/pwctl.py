@@ -193,11 +193,30 @@ class Status:
         return None
 
 
-def status(echo_cancel: bool = False) -> Status:
+def try_dump() -> list[dict] | None:
+    """pw-dump oder None, wenn PipeWire nicht antwortet."""
     try:
-        objs = dump()
+        return dump()
     except (RuntimeError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        objs = []
+        return None
+
+
+def default_sink_description(objs: list[dict]) -> str | None:
+    """Beschreibung der Standardausgabe (Metadaten „default“) aus pw-dump-Objekten."""
+    from .reflink import Graph
+
+    name = Graph(objs).default_sink()
+    for o in objs:
+        p = _props(o)
+        if o.get("type") == "PipeWire:Interface:Node" and name is not None and p.get("node.name") == name:
+            return p.get("node.description") or name
+    return name
+
+
+def status(echo_cancel: bool = False, objs: list[dict] | None = None) -> Status:
+    """Zustand aus `objs` (pw-dump) oder einem eigenen pw-dump."""
+    if objs is None:
+        objs = try_dump() or []
     try:
         running = service_active()
     except (OSError, subprocess.TimeoutExpired):

@@ -1,4 +1,4 @@
-from uma8_callmic.config import Config, load, save
+from uma8_callmic.config import PROFILE_FIELDS, Config, load, profile_defaults, save
 
 
 def test_missing_file_gives_defaults(tmp_path):
@@ -70,3 +70,40 @@ def test_echo_cancel_defaults_on_for_old_files(tmp_path):
     save(Config(echo_cancel=False), path)
     assert "echo_cancel = false\n" in path.read_text()
     assert load(path).config.echo_cancel is False
+
+
+def test_profile_roundtrip(tmp_path):
+    path = tmp_path / "config.toml"
+    cfg = Config(speakers=[[116.0, 8.0], [313.5, 10.0]], speaker_levels_dbfs=[-52.0, -54.5], keyboard=[213.0, 5.0],
+                 null_weight_db=10.0, talker_zone_deg=40.0, noise_floor_dbfs=-77.0, speech_level_dbfs=-47.5)
+    save(cfg, path)
+    assert "speakers = [[116.0, 8.0], [313.5, 10.0]]\n" in path.read_text()
+    res = load(path)
+    assert res.config == cfg and res.warnings == [] and res.config.has_profile()
+
+
+def test_no_profile_by_default_and_unset_levels_are_omitted(tmp_path):
+    path = tmp_path / "config.toml"
+    cfg = Config()
+    assert not cfg.has_profile() and cfg.talker_zone_deg == 180.0 and cfg.speakers == []
+    save(cfg, path)
+    text = path.read_text()
+    assert "noise_floor_dbfs" not in text and "speech_level_dbfs" not in text   # None: kein Schlüssel
+    assert load(path).config == cfg
+    assert profile_defaults() == {k: getattr(Config(), k) for k in PROFILE_FIELDS}
+
+
+def test_invalid_profile_values_fall_back(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('speakers = [[100, 5], [200, 95]]\nkeyboard = [10]\nnull_weight_db = 50.0\n'
+                    'talker_zone_deg = 2\nnoise_floor_dbfs = "leise"\nspeaker_levels_dbfs = [-50.0, true]\n')
+    res = load(path)
+    c = res.config
+    assert c.speakers == [] and c.keyboard == [] and c.null_weight_db == 0.0 and c.talker_zone_deg == 180.0
+    assert c.noise_floor_dbfs is None and c.speaker_levels_dbfs == [] and len(res.warnings) == 6
+    path.write_text("speakers = [[100, 5], [200, 7], [300, 1]]\n")          # höchstens zwei
+    assert load(path).config.speakers == []
+    path.write_text("speakers = [[100, 5]]\nspeaker_levels_dbfs = [-50.0, -52.0]\n")
+    res = load(path)
+    assert res.config.speakers == [[100.0, 5.0]] and res.config.speaker_levels_dbfs == []
+    assert any("Lautsprecherpegel" in w for w in res.warnings)
