@@ -226,9 +226,13 @@ Out“ ist das Mittel-Mikrofon, um 1024 + „Raw Extra Delay“ verzögert.
   fällt mit Faktor 0,8 je Hop (≈ 24 ms) gegen Musical Noise.
 
 **Später Nachhall, „Late Reverb“** (`dereverb.rs`): Lebart/Habets auf dem
-Beam-Spektrum. PSD des späten Nachhalls = PSD von vor 50 ms mal
-exp(−2δ·50 ms), δ = 3·ln 10/T60; Wiener-artige Verstärkung mit Untergrenze
-−15·s dB, Glättung 0,5 je Hop. Beide Verstärkungen werden multipliziert: Die
+Beam-Spektrum. PSD des späten Nachhalls = PSD von vor 25 ms mal
+exp(−2δ·25 ms), δ = 3·ln 10/T60; Wiener-artige Verstärkung mit Untergrenze
+−25·s dB, Glättung 0,5 je Hop. Zuerst 50 ms und −15·s dB: Am echten Raum
+blieben damit die ersten ≈ 60 ms jedes Ausklangs unberührt, danach fiel er
+doppelt so steil („abgehackt“), und laute Sprache ließ hörbaren Hall stehen.
+25 ms und −25·s dB klangen im Hörvergleich besser, ohne Musical Noise; das
+kostet ≈ 1 dB Sprachpegel mehr (anhaltende Laute werden mitgedämpft). Beide Verstärkungen werden multipliziert: Die
 Kohärenz erkennt diffusen Schall auch während der Sprache, das Abklingmodell
 den Nachhall in Pausen; im Raum-Test dämpfte das Produkt den Schwanz um 6 dB
 mehr als das Minimum der beiden, bei gleichem SI-SDR. Eine falsch eingestellte

@@ -4,11 +4,15 @@
 
 use crate::stft::{BINS, C32, HOP};
 
-const LATE_ONSET_S: f32 = 0.05;
+/// Ab hier gilt Schall als später Nachhall. 50 ms ließen die ersten ≈ 60 ms jedes Ausklangs unberührt
+/// und schnitten dann steil ab (im Raum hörbar als „abgehackter“ Hall); 25 ms klingen gleichmäßiger.
+const LATE_ONSET_S: f32 = 0.025;
 const MAX_ONSET_FRAMES: usize = 32;
 const PSD_SMOOTH: f32 = 0.8;
 const GAIN_SMOOTH: f32 = 0.5;
-const MAX_ATTENUATION_DB: f32 = 15.0;
+/// Größte Dämpfung bei Stärke 1 (0,6 → 15 dB). 15 dB ließen bei lauter Sprache hörbaren Hall stehen;
+/// 25 dB ohne Musical Noise im Hörvergleich.
+const MAX_ATTENUATION_DB: f32 = 25.0;
 const EPS: f32 = 1e-30;
 
 pub struct LateReverb {
@@ -167,11 +171,13 @@ mod tests {
 
         let (t0, t1) = (burst + (0.1 * SR) as usize, burst + (0.6 * SR) as usize);
         let tail_db = 10.0 * (energy(&wet[t0..t1]) / aligned(t0, t1)).log10();
-        assert!(tail_db >= 6.0, "Nachhall nur um {tail_db} dB reduziert");
+        assert!(tail_db >= 8.5, "Nachhall nur um {tail_db} dB reduziert");
 
         let (b0, b1) = ((0.1 * SR) as usize, burst);
         let direct_db = 10.0 * (energy(&wet[b0..b1]) / aligned(b0, b1)).log10();
-        assert!(direct_db <= 3.0, "Direktschall um {direct_db} dB gedämpft");
+        // Einsatz nach 25 ms dämpft auch Gleichbleibendes (hier 3,1 dB, mit 50 ms 1,6 dB; echte Sprache
+        // gemessen 1 dB mehr als mit 50 ms). Im Hörvergleich klang der Nachhall so weniger abgehackt.
+        assert!(direct_db <= 3.5, "Direktschall um {direct_db} dB gedämpft");
     }
 
     #[test]
