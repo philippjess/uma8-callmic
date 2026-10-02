@@ -266,6 +266,24 @@ def test_run_retries_with_backoff_and_ends_with_chain(monkeypatch):
     assert sleeps == [2.0, 4.0, 8.0]  # scheitert pw-dump immer wieder, nicht im 2-s-Takt den Graphen lesen
 
 
+def test_run_survives_unexpected_exceptions(monkeypatch, caplog):
+    """Auch ein unerwarteter Fehler beendet den Helfer nicht, er läuft mit derselben Pause weiter."""
+    results = iter([TypeError("unerwartet"), AttributeError("auch"), True])
+
+    def fake_follow(linker):
+        r = next(results)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    sleeps = []
+    monkeypatch.setattr(reflink, "follow", fake_follow)
+    monkeypatch.setattr(reflink.time, "sleep", sleeps.append)
+    assert reflink.run("uma8t") == 0
+    assert sleeps == [2.0, 4.0]
+    assert "TypeError: unerwartet" in caplog.text
+
+
 def test_batches_tolerates_invalid_utf8():
     (objs,), _ = batches(b'[\n  {\n    "id": 1,\n    "name": "\xff"\n  }\n]\n')
     assert objs[0]["id"] == 1

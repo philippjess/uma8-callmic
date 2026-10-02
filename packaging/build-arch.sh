@@ -82,7 +82,10 @@ container_main() {
         pacman -S --noconfirm --needed --asdeps "${deps[@]}" >>"$log" 2>&1 || { tail -n 40 "$log"; fail "Abhängigkeiten von $p"; }
 
         say "$p: makepkg (Log: packaging/out/arch/logs/$p-build.log)"
-        su builder -c "cd '$dir' && PKGDEST=/home/builder/pkgs SRCDEST=/var/cache/makepkg-src BUILDDIR=/home/builder/build \
+        # PATH wie auf Arch üblich: Das Image setzt /usr/sbin vor /usr/bin (dort ein Symlink), Python-Installer
+        # schrieben sonst #!/usr/sbin/python in die Startskripte
+        su builder -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin; cd '$dir' && PKGDEST=/home/builder/pkgs \
+                       SRCDEST=/var/cache/makepkg-src BUILDDIR=/home/builder/build \
                        makepkg -f --noconfirm --nodeps --cleanbuild" > "/out/logs/$p-build.log" 2>&1 \
             || { tail -n 60 "/out/logs/$p-build.log"; fail "makepkg für $p fehlgeschlagen"; }
 

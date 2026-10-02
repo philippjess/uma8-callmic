@@ -6,14 +6,15 @@ DeepFilterNet-Rauschunterdrückung, volle Bandbreite. Bedienung über ein KDE-Tr
 
 ## Voraussetzungen
 
-- Linux mit PipeWire und WirePlumber (getestet: Fedora 44 KDE; Arch-Pakete im Container gebaut und geprüft)
+- Linux mit PipeWire (ab 1.2) und WirePlumber (getestet: Fedora 44 KDE; Arch-Pakete im Container gebaut und geprüft)
 - UMA-8 mit **Raw-Firmware** (`micArray_vf_raw_v1.3_up.bin`, USB-ID `2752:001d`). Firmware nur mit dem
   offiziellen miniDSP-Tool wechseln (Windows-VM: siehe `firmware/docker-compose.usb.yml`).
 
 ## Installation (Fedora, RPM)
 
 Die RPMs entstehen in einem Podman-Container aus Fedora 44 – auf dem Host braucht es nur `podman`, `git` und
-`python3`, gebaut wird nichts ins System:
+`python3`, gebaut wird nichts ins System. Vorher `./uninstall.sh`, falls `install.sh` benutzt wurde (Einstellungen
+behalten): Plugin und Dienst der Entwickler-Installation gingen sonst denen des Pakets vor.
 
 ```sh
 ./packaging/build-rpms.sh                      # beide Pakete; nur eins: ./packaging/build-rpms.sh uma8-callmic
@@ -27,8 +28,9 @@ Das ergibt zwei Pakete:
 - `deepfilternet-ladspa`: DeepFilterNet 0.5.6 als LADSPA-Plugin, mit behobenem Thread-Leck
 
 Danach „UMA-8 Call Mic“ aus dem Startmenü starten. Beim ersten Start aktiviert das Tray den Dienst und den
-Autostart für den eigenen Benutzer. Das Mikrofon „UMA-8 Call Mic“ einmal in den Audio-Einstellungen als
-Standard wählen (oder `pactl set-default-source uma8_callmic`).
+Autostart für den eigenen Benutzer, nur dieses eine Mal: Ein später per `systemctl --user disable` abgeschalteter
+Dienst oder ein gelöschter Autostart-Eintrag bleibt so (Autostart: Optionen → „Beim Login starten“). Das Mikrofon
+„UMA-8 Call Mic“ einmal in den Audio-Einstellungen als Standard wählen (oder `pactl set-default-source uma8_callmic`).
 
 Der Bau lädt den DeepFilterNet-Quelltext (Prüfsumme in `packaging/deepfilternet-ladspa.sources`) und die
 Rust-Crates herunter, `rpmbuild` selbst läuft danach offline. Ergebnisse, Logs und rpmlint-Ausgabe:
@@ -37,6 +39,8 @@ Rust-Crates herunter, `rpmbuild` selbst läuft danach offline. Ergebnisse, Logs 
 ## Installation (Arch Linux, Paket)
 
 Zwei Pakete, gebaut aus dem Checkout: `deepfilternet-ladspa` (DeepFilterNet 0.5.6 mit dem Thread-Leck-Patch) und `uma8-callmic`.
+Vorher `./uninstall.sh`, falls `install.sh` benutzt wurde (Einstellungen behalten): Plugin und Dienst der
+Entwickler-Installation gingen sonst denen des Pakets vor.
 
     ./packaging/build-arch.sh            # baut beide in einem Podman-Container (archlinux:latest)
     sudo pacman -U packaging/out/arch/*.pkg.tar.zst
@@ -48,29 +52,50 @@ Direkt auf dem Arch-Rechner geht es auch, im jeweiligen Verzeichnis (zuerst das 
 
 `deepfilternet-ladspa` ersetzt das AUR-Paket `deepfilternet-plugin-pipewire-bin` (provides/conflicts/replaces): pacman tauscht es beim Installieren aus. Das AUR-Paket liefert zwar `libdeep_filter_ladspa` und erfüllt damit die Abhängigkeit von `uma8-callmic`, behält aber das Thread-Leck. Abhängigkeiten kommen aus den offiziellen Repos: `pipewire`, `pipewire-audio` (pw-record, WebRTC-AEC), `libpipewire` (echo-cancel), `libpulse` (pactl), `pyside6`, `python-numpy`.
 
-Erster Start: Das Paket aktiviert nichts von selbst. Beim ersten Start des Tray-Programms (`uma8-callmic` oder Startmenü-Eintrag) richtet es Benutzerdienst und Autostart ein. Der Dienst `uma8-callmic-chain.service` ist ein systemd-Benutzerdienst (`systemctl --user status uma8-callmic-chain`); er schreibt vor dem Start die PipeWire-Konfiguration neu (`uma8-callmic --write-config`).
+Erster Start: Das Paket aktiviert nichts von selbst. Beim ersten Start des Tray-Programms (`uma8-callmic` oder Startmenü-Eintrag) richtet es Benutzerdienst und Autostart ein, nur dieses eine Mal (wie oben bei Fedora). Der Dienst `uma8-callmic-chain.service` ist ein systemd-Benutzerdienst (`systemctl --user status uma8-callmic-chain`); er schreibt vor dem Start die PipeWire-Konfiguration neu (`uma8-callmic --write-config`).
 
-## Entwickler-Installation (ohne RPM)
+## Entwickler-Installation (ohne Paket)
 
-Läuft direkt aus dem Repo, nur für den eigenen Benutzer, und verweigert sich, solange das RPM installiert ist.
-Braucht Rust, PySide6, numpy und ein DeepFilterNet-Plugin:
+Läuft direkt aus dem Repo, nur für den eigenen Benutzer, und verweigert sich, solange das Paket `uma8-callmic`
+(RPM oder Arch) installiert ist. Braucht Rust, PySide6, numpy und ein DeepFilterNet-Plugin:
 
 - Fedora: `sudo dnf install cargo python3-pyside6 python3-numpy pipewire-utils pulseaudio-utils`, dazu
   `./packaging/build-rpms.sh deepfilternet-ladspa` und `sudo dnf install packaging/out/deepfilternet-ladspa-*.x86_64.rpm`
-- Arch: `sudo pacman -S rust pyside6 python-numpy` und ein DeepFilterNet-Plugin (Paket oben oder
-  `yay -S deepfilternet-plugin-pipewire-bin`)
+- Arch: `sudo pacman -S rust pyside6 python-numpy`, dazu das Paket `deepfilternet-ladspa` von oben
+  (`./packaging/build-arch.sh deepfilternet-ladspa` und `sudo pacman -U packaging/out/arch/deepfilternet-ladspa-*.pkg.tar.zst`).
+  Alternative: `yay -S deepfilternet-plugin-pipewire-bin`, behält aber das Thread-Leck.
 
 ```sh
 ./install.sh
 uma8-callmic &
 ```
 
-Die Plugins werden in dieser Reihenfolge gesucht: `~/.local/lib/ladspa`, `/usr/lib64/ladspa` (außer es ist
-nur ein Symlink, wie auf Arch), `/usr/lib/ladspa`;
-`UMA8_BEAM_PLUGIN` bzw. `UMA8_DFN_PLUGIN` erzwingen einen bestimmten Pfad.
+`install.sh` beendet ein laufendes Tray, bevor es die Kette neu startet, und startet es danach wieder (in einer
+grafischen Sitzung).
+
+Die Plugins werden in dieser Reihenfolge gesucht: `~/.local/lib/ladspa`, `/usr/lib64/ladspa` (entfällt, wenn es nur
+ein anderer Name für `/usr/lib/ladspa` ist, wie auf Arch), `/usr/lib/ladspa`; ist keins installiert, gilt der
+Systemort der Distribution. `UMA8_BEAM_PLUGIN` bzw. `UMA8_DFN_PLUGIN` erzwingen einen bestimmten Pfad. Ist das
+gefundene `libuma8_beam.so` älter als das Programm (es fehlen Controls), wird das Icon rot und der Tooltip nennt
+den Pfad.
 
 Beim ersten Start prüft das Programm die Kanalzuordnung (10 s still sein) und bittet danach um eine
 Kalibrierung (Rechtsklick → Kalibrieren…).
+
+## Aktualisieren von einer älteren Version
+
+- Entwickler-Installation: neuen Stand holen und `./install.sh` erneut ausführen. Es beendet vorher ein laufendes
+  Tray – ein altes Tray setzte sonst seine alten Werte in die neue Kette (z. B. die volle Verstärkung zusätzlich zu
+  den 24 dB vor der Echounterdrückung) – startet die Kette neu und das Tray wieder. Läuft das Tray nicht, danach
+  `uma8-callmic &` oder Startmenü.
+- Wechsel zum Paket (RPM oder Arch): erst `./uninstall.sh` (Einstellungen behalten), dann das Paket installieren und
+  „UMA-8 Call Mic“ aus dem Startmenü starten; es richtet Dienst und Autostart neu ein. Liegen noch Reste von
+  `install.sh` herum (`~/.local/lib/ladspa/libuma8_beam.so`, `~/.config/systemd/user/uma8-callmic-chain.service`,
+  `~/.local/bin/uma8-callmic`), wird das Icon rot und nennt sie.
+- Einmalige Umstellung der Einstellungen: Die Hallunterdrückung ist jetzt standardmäßig an und ihre Stärke auf den
+  Standard zurückgesetzt (die Stärke wirkt jetzt anders). Das Tray speichert das beim ersten Start und zeigt einen
+  Hinweis; abschalten unter Optionen.
+- Neu und standardmäßig an: die Echounterdrückung (unten).
 
 ## Bedienung
 
@@ -115,6 +140,8 @@ WebRTC AEC3); ein Wechsel der Standardausgabe wird übernommen, auch mitten im A
 - Die Echounterdrückung der Anruf-Programme kann an bleiben.
 - Nur Ton auf der Standardausgabe wird entfernt. Gibt das Anruf-Programm auf einem anderen Gerät aus, bleibt
   dessen Echo.
+- Die Referenz ist stereo: Von einer Mehrkanal-Standardausgabe (z. B. 5.1) zählen nur vorne links und rechts;
+  Ton über Mitte, Subwoofer oder hinten (auch hochgemischter Stereo-Ton) bleibt als Echo.
 - Spricht man gleichzeitig mit dem Gegenüber, wird die eigene Stimme leiser, umso mehr, je lauter die
   Lautsprecher am Mikrofon ankommen. Lautsprecher leiser oder weiter weg hilft.
 - Die Referenz ist nur verbunden, solange ein Programm von „UMA-8 Call Mic“ aufnimmt: Musik und Videos ohne
@@ -150,11 +177,13 @@ python -m pytest -m integration                   # nach der Installation, brauc
 python3 tools/check_output.py                     # mit angeschlossenem UMA-8
 ```
 
-Der RPM-Bau führt die Unit- und Rust-Tests beider Pakete ebenfalls aus (`%check`).
+Die RPM- und Arch-Bauten führen die Unit- und Rust-Tests beider Pakete ebenfalls aus (`%check`, `check()`), ohne
+die Rechenzeit-Tests (`-m timing`), weil Bauhosts beliebig langsam sein können.
 
 ## Deinstallation
 
 ```sh
 ./uninstall.sh                                    # Einrichtung des eigenen Benutzers (Dienst, Autostart, …)
 sudo dnf remove uma8-callmic deepfilternet-ladspa # bei RPM-Installation zusätzlich
+sudo pacman -R uma8-callmic deepfilternet-ladspa  # bzw. bei den Arch-Paketen
 ```

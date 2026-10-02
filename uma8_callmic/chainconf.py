@@ -3,7 +3,7 @@ import math
 from pathlib import Path
 
 from . import constants as K
-from .config import Config
+from .config import Config, write_atomic
 from .params import all_params
 
 TEMPLATE = K.DATA_DIR / "uma8-callmic.conf.in"
@@ -96,6 +96,5 @@ def write(cfg: Config, path: Path = K.CHAIN_CONF) -> bool:
     text = render(cfg)
     if path.exists() and path.read_text() == text:
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    write_atomic(path, text)  # Tray und ExecStartPre schreiben beim Login womöglich gleichzeitig
     return True

@@ -27,18 +27,40 @@ CONFIG_FILE = Path.home() / ".config/uma8-callmic/config.toml"
 CHAIN_CONF = Path.home() / ".config/pipewire/uma8-callmic.conf"
 STATE_DIR = Path.home() / ".local/state/uma8-callmic"
 AUTOSTART_FILE = Path.home() / ".config/autostart/uma8-callmic.desktop"
-#: Startbefehl der Entwickler-Installation (install.sh); das RPM installiert /usr/bin/uma8-callmic
+#: Startbefehl der Entwickler-Installation (install.sh); die Pakete installieren /usr/bin/uma8-callmic
 LAUNCHER = Path.home() / ".local/bin/uma8-callmic"
+#: Dienst der Entwickler-Installation; überdeckt den des Pakets (/usr/lib/systemd/user)
+USER_UNIT = Path.home() / ".config/systemd/user" / SERVICE
 
 #: Vorlagen und Icons liegen im Python-Paket – gleich, ob aus dem Repo gestartet oder installiert
 PKG_DIR = Path(__file__).resolve().parent
 DATA_DIR = PKG_DIR / "data"
 ICON_DIR = PKG_DIR / "icons"
+#: Läuft aus einem Checkout (install.sh, Entwicklung) statt aus einem Paket
+FROM_REPO = (PKG_DIR.parent / "pyproject.toml").is_file()
 
 BEAM_SO = "libuma8_beam.so"
 DFN_SO = "libdeep_filter_ladspa.so"
-#: Suchorte der LADSPA-Plugins: Entwickler-Installation (install.sh), RPM (Fedora), /usr/lib (Arch/AUR)
-LADSPA_DIRS = (Path.home() / ".local/lib/ladspa", Path("/usr/lib64/ladspa"), Path("/usr/lib/ladspa"))
+#: Plugin-Ort der Entwickler-Installation (install.sh); geht allen Paketen vor
+USER_LADSPA_DIR = Path.home() / ".local/lib/ladspa"
+#: Suchorte der LADSPA-Plugins: Entwickler-Installation, Fedora (RPM), Arch (Pakete, AUR)
+LADSPA_DIRS = (USER_LADSPA_DIR, Path("/usr/lib64/ladspa"), Path("/usr/lib/ladspa"))
+
+
+def _resolve(d: Path) -> Path:
+    try:
+        return d.resolve()
+    except (OSError, RuntimeError):  # Symlink-Schleife
+        return d
+
+
+def search_dirs() -> list[Path]:
+    """LADSPA_DIRS ohne Aliasse: Ein Ort, der über Symlinks auf einen anderen, selbst kanonischen Suchort zeigt,
+    entfällt (Arch: /usr/lib64 → lib, sonst stünde /usr/lib64/ladspa in der Konfiguration). Ein per Symlink
+    verlegtes ~/.local/lib zeigt auf keinen anderen Suchort und bleibt."""
+    real = {d: _resolve(d) for d in LADSPA_DIRS}
+    canonical = {d for d, r in real.items() if r == d}
+    return [d for d in LADSPA_DIRS if d in canonical or real[d] not in canonical]
 
 
 def find_plugin(so_name: str, env_var: str) -> Path:
@@ -46,18 +68,21 @@ def find_plugin(so_name: str, env_var: str) -> Path:
 
     Eine gesetzte Umgebungsvariable gilt immer, auch wenn die Datei fehlt – ein Tippfehler zeigt sich
     dann als fehlendes Plugin statt still auf ein anderes auszuweichen. Sonst gilt der erste vorhandene
-    Ort aus LADSPA_DIRS; ist das Plugin nirgends installiert, der Systemort der Distribution (das Tray meldet
-    das Fehlen). Orte unter einem Symlink-Verzeichnis zählen nicht (Arch: /usr/lib64 → lib), sonst stünde dort
-    /usr/lib64/ladspa statt /usr/lib/ladspa in der Konfiguration."""
+    Ort aus search_dirs(); ist das Plugin nirgends installiert, der erste Systemort (Fedora /usr/lib64/ladspa,
+    Arch /usr/lib/ladspa; das Tray meldet das Fehlen)."""
     override = os.environ.get(env_var)
     if override:
         return Path(override).expanduser()
-    candidates = [d / so_name for d in LADSPA_DIRS if not d.parent.is_symlink()]
-    return next((p for p in candidates if p.exists()), candidates[1])
+    dirs = search_dirs()
+    found = next((d / so_name for d in dirs if (d / so_name).exists()), None)
+    if found is not None:
+        return found
+    system = [d for d in dirs if d != LADSPA_DIRS[0]] or dirs  # LADSPA_DIRS[0]: Entwickler-Installation
+    return system[0] / so_name
 
 
 def launcher() -> str:
-    """Startbefehl dieser Installation: RPM /usr/bin/uma8-callmic, sonst der von install.sh."""
+    """Startbefehl dieser Installation: Paket /usr/bin/uma8-callmic, sonst der von install.sh."""
     return shutil.which("uma8-callmic") or str(LAUNCHER)
 
 

@@ -12,7 +12,8 @@ from PySide6.QtWidgets import QApplication
 from uma8_callmic import constants as K
 from uma8_callmic import pwctl
 from uma8_callmic import tray as tray_mod
-from uma8_callmic.config import Config, profile_defaults, save
+from uma8_callmic.config import Config, load, profile_defaults, save
+from uma8_callmic.dialogs import OptionsDialog
 from uma8_callmic.params import NULL_KEYS, all_params
 from uma8_callmic.tracker import Zone
 
@@ -48,13 +49,16 @@ def qapp():
 
 @pytest.fixture
 def env(qapp, tmp_path, monkeypatch):
-    state = {"in_use": False, "params": [], "captures": []}
+    state = {"in_use": False, "params": [], "captures": [], "autostart": [], "enable": [], "enabled": False}
     monkeypatch.setattr(K, "CONFIG_FILE", tmp_path / "config.toml")
+    monkeypatch.setattr(K, "AUTOSTART_FILE", tmp_path / "autostart.desktop")
     monkeypatch.setattr(K, "dfn_plugin", lambda: Path(__file__))
     monkeypatch.setattr(K, "beam_plugin", lambda: Path(__file__))
+    monkeypatch.setattr(pwctl, "beam_api_problem", lambda path: None)
+    monkeypatch.setattr(pwctl, "dev_leftovers", lambda: [])
     monkeypatch.setattr(tray_mod.chainconf, "write", lambda cfg: False)
-    monkeypatch.setattr(pwctl, "sync_autostart", lambda enabled: False)
-    monkeypatch.setattr(pwctl, "ensure_service_enabled", lambda: False)
+    monkeypatch.setattr(pwctl, "sync_autostart", lambda enabled: state["autostart"].append(enabled) or False)
+    monkeypatch.setattr(pwctl, "ensure_service_enabled", lambda: state["enable"].append(1) or state["enabled"])
     monkeypatch.setattr(pwctl, "restart_chain", lambda: None)
     monkeypatch.setattr(pwctl, "service_active", lambda: True)
     monkeypatch.setattr(pwctl, "raw_source", lambda: K.RAW_DEVICE)
@@ -67,8 +71,13 @@ def env(qapp, tmp_path, monkeypatch):
         return cap
     monkeypatch.setattr(tray_mod, "open_capture", capture)
 
-    def start(cfg: Config):
-        save(cfg, K.CONFIG_FILE)
+    def start(cfg: Config | None):
+        """cfg=None: mit der gespeicherten Datei starten (späterer Start)."""
+        if "app" in state:
+            state["app"].timer.stop()
+            state["app"].shutdown()
+        if cfg is not None:
+            save(cfg, K.CONFIG_FILE)
         app = tray_mod.TrayApp(qapp)
         app.track_gate.hold = 0.0     # Nachlauf (2 s) im Test sofort
         state["app"] = app
@@ -140,3 +149,43 @@ def test_menu_has_new_entries(env):
     app = env["start"](Config(geometry_checked=True))
     texts = [a.text() for a in app.menu.actions()]
     assert "Arbeitsplatz einmessen…" in texts and "Platzierung…" in texts
+
+
+def test_first_run_setup_runs_once(env):
+    """Einrichtung (Autostart, Dienst) nur beim ersten Start; später bleiben ein per systemctl deaktivierter Dienst
+    und ein gelöschter Autostart-Eintrag so, die Optionen zeigen den echten Zustand."""
+    env["start"](Config(geometry_checked=True))
+    assert env["autostart"] == [True] and len(env["enable"]) == 1
+    assert load(K.CONFIG_FILE).config.setup_done
+    app = env["start"](None)                                            # späterer Start, Autostart gelöscht
+    assert env["autostart"] == [True] and len(env["enable"]) == 1 and app.cfg.autostart is False
+    K.AUTOSTART_FILE.touch()
+    app = env["start"](None)
+    assert app.cfg.autostart is True and len(env["enable"]) == 1
+    app.apply_options({"autostart": False})                             # nur die Optionen ändern ihn
+    assert env["autostart"] == [True, False]
+
+
+def test_first_run_setup_retries_when_systemctl_fails(env):
+    env["enabled"] = None
+    env["start"](Config(geometry_checked=True))
+    assert len(env["enable"]) == 1 and not load(K.CONFIG_FILE).config.setup_done
+    env["enabled"] = True
+    env["start"](None)
+    assert len(env["enable"]) == 2 and load(K.CONFIG_FILE).config.setup_done
+
+
+def test_options_dialog_keeps_nulls_saved_by_wizard(env, monkeypatch):
+    """Optionen offen, Assistent speichert Nullstellen, danach ein Regler in den Optionen: Nullstellen bleiben."""
+    monkeypatch.setattr(tray_mod, "OptionsDialog", lambda *a, **kw: OptionsDialog(*a, meter=False, **kw))
+    env["in_use"] = True
+    app = env["start"](Config(geometry_checked=True, setup_done=True))
+    app.open_options()
+    dlg = app.dialogs["options"]
+    app.apply_profile({"speakers": [[100.0, 5.0], [300.0, 5.0]], "null_weight_db": 10.0})
+    assert dlg.nulls.isChecked() and dlg.nulls.isEnabled()
+    dlg.gain.setValue(35)
+    assert app.cfg.gain_db == 35.0 and app.cfg.null_weight_db == 10.0
+    assert env["params"][-1][1]["beam:Null Weight (dB)"] == 10.0
+    dlg.nulls.setChecked(False)
+    assert app.cfg.null_weight_db == 0.0

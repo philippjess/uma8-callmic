@@ -61,10 +61,12 @@ class TrayApp:
         self.tray.show()
 
         chainconf.write(self.cfg)
-        self.set_autostart(self.cfg.autostart)
-        if pwctl.ensure_service_enabled():  # Erststart ohne install.sh, z. B. nach dem RPM
-            self.tray.showMessage("UMA-8 Call Mic", "Filterkette eingerichtet. „UMA-8 Call Mic“ jetzt in den "
-                                  "Audio-Einstellungen als Mikrofon wählen.")
+        if self.cfg.setup_done:
+            # Nur anzeigen, was ist: Ein gelöschter Autostart-Eintrag bleibt gelöscht, ein per systemctl
+            # deaktivierter Dienst deaktiviert; ändern kann beides nur der Nutzer (Optionen bzw. systemctl).
+            self.cfg.autostart = K.AUTOSTART_FILE.exists()
+        else:
+            self.first_run_setup()
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh)
         self.timer.start(2000)
@@ -78,6 +80,20 @@ class TrayApp:
             QTimer.singleShot(1500, self.open_geometry)
         elif not self.cfg.calibrated:
             self.tray.showMessage("UMA-8 Call Mic", "Bitte einmal kalibrieren: Rechtsklick → Kalibrieren…")
+
+    def first_run_setup(self) -> None:
+        """Einmal je Benutzer (Paket ohne install.sh; ältere Einstellungen ohne „setup_done“ einmal, für schon
+        eingerichtete Benutzer ohne Wirkung): Autostart nach Einstellung, Dienst aktivieren und starten.
+        Scheitert systemctl, beim nächsten Start erneut."""
+        self.set_autostart(self.cfg.autostart)
+        enabled = pwctl.ensure_service_enabled()
+        if enabled is None:
+            return
+        self.cfg.setup_done = True
+        self.save_config()
+        if enabled:
+            self.tray.showMessage("UMA-8 Call Mic", "Filterkette eingerichtet. „UMA-8 Call Mic“ jetzt in den "
+                                  "Audio-Einstellungen als Mikrofon wählen.")
 
     # --- Zustand ---------------------------------------------------------------
 
@@ -121,6 +137,7 @@ class TrayApp:
         self.save_config()
         self._set({**all_params(self.cfg, self.tracked), **null_params(self.cfg, force=True)})
         self._sync_zone()
+        self._sync_options()
         self.refresh()
 
     def save_config(self) -> None:
@@ -171,7 +188,7 @@ class TrayApp:
                               "(kurze Tonpause).")
 
     def set_autostart(self, enabled: bool) -> None:
-        """Autostart-Datei angleichen: legt sie auch an, wenn sie fehlt (RPM ohne install.sh)."""
+        """Autostart-Datei angleichen (Einrichtung, Optionen): legt sie auch an, wenn sie fehlt."""
         try:
             pwctl.sync_autostart(enabled)
         except OSError as e:
@@ -184,6 +201,7 @@ class TrayApp:
         self.save_config()
         self._set(steering_params(self.cfg, self.tracked))
         self._sync_zone()  # die Sprechzone liegt um die kalibrierte Richtung
+        self._sync_options()
         self.refresh()
 
     def geometry_done(self, ran: bool, adopt: ArrayGeometry | None) -> None:
@@ -204,6 +222,12 @@ class TrayApp:
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def _sync_options(self) -> None:
+        """Offener Optionen-Dialog: Profil und Kalibrierung neu anzeigen (Assistent, Kalibrieren nebenher)."""
+        dlg = self.dialogs.get("options")
+        if dlg is not None and dlg.isVisible():
+            dlg.sync_profile(self.cfg)
 
     def open_options(self) -> None:
         self._show("options", lambda: OptionsDialog(self.cfg, self.apply_options, self.open_geometry))

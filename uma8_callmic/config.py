@@ -1,7 +1,9 @@
 """Einstellungen in ~/.config/uma8-callmic/config.toml."""
 from __future__ import annotations
 
+import os
 import shutil
+import threading
 import tomllib
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -37,6 +39,9 @@ class Config:
     #: Echounterdrückung (Referenz: Standardausgabe). Umschalten ändert den Aufbau der Kette → Dienst-Neustart
     echo_cancel: bool = True
     autostart: bool = True
+    #: Einmalige Einrichtung des Benutzers erledigt (Dienst aktivieren, Autostart anlegen). Danach ändert das Tray
+    #: beides nie mehr von selbst; uninstall.sh löscht den Schlüssel wieder.
+    setup_done: bool = False
     geometry_checked: bool = False
     center_channel: int = 0
     ring: list[int] = field(default_factory=lambda: list(DEFAULT_RING))
@@ -199,14 +204,22 @@ def _toml(v) -> str:
     raise TypeError(f"nicht serialisierbar: {v!r}")
 
 
+def write_atomic(path: Path, text: str) -> None:
+    """Über eine eigene temporäre Datei im selben Verzeichnis und os.replace: Leser sehen nie eine halbe Datei,
+    und gleichzeitige Schreiber (Tray und ExecStartPre beim Login) ersetzen sie nur ganz."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def save(cfg: Config, path: Path, broken: bool = False) -> None:
     """Speichert atomar; eine zuvor unlesbare Datei wird als .toml.broken gesichert."""
-    path.parent.mkdir(parents=True, exist_ok=True)
     if broken and path.exists():
         shutil.copy2(path, path.with_suffix(".toml.broken"))
     # None = nicht gesetzt: TOML kennt kein null, der Schlüssel fehlt dann (Laden ergibt wieder None)
-    text = "# uma8-callmic Einstellungen\n" + "".join(f"{k} = {_toml(v)}\n" for k, v in asdict(cfg).items()
-                                                      if v is not None)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(text)
-    tmp.replace(path)
+    write_atomic(path, "# uma8-callmic Einstellungen\n" + "".join(f"{k} = {_toml(v)}\n"
+                                                                  for k, v in asdict(cfg).items() if v is not None))

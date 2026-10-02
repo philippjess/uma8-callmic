@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import constants as K
+from . import ladspainfo
+from .config import Config, write_atomic
+from .params import NULL_KEYS, all_params
 
 log = logging.getLogger(__name__)
 #: Antworten von „systemctl is-enabled“, bei denen der Dienst schon beim Login startet
@@ -116,24 +119,28 @@ def service(action: str) -> None:
     _run(["systemctl", "--user", action, K.SERVICE], timeout=15.0)
 
 
-def ensure_service_enabled() -> bool:
-    """Erststart ohne install.sh (RPM): Dienst für diesen Benutzer aktivieren und starten.
+def ensure_service_enabled() -> bool | None:
+    """Einmalige Einrichtung ohne install.sh (Paket): Dienst für diesen Benutzer aktivieren und starten.
 
-    Nur im Zustand „disabled“; maskiert bleibt maskiert. True, wenn der Dienst jetzt aktiviert wurde.
+    Nur im Zustand „disabled“; maskiert bleibt maskiert. True: jetzt aktiviert; False: nichts zu tun (schon aktiv,
+    maskiert, statisch …); None: nicht gelungen (systemctl scheitert, Dienst unbekannt) – später erneut versuchen.
     Fehler werden protokolliert, nie geworfen – das Tray zeigt einen nicht laufenden Dienst ohnehin an."""
     try:
         state = _run(["systemctl", "--user", "is-enabled", K.SERVICE]).stdout.strip()
         if state != "disabled":
+            if state in ("", "not-found"):
+                log.warning("Dienst %s nicht gefunden", K.SERVICE)
+                return None
             if state not in ENABLED_STATES:
-                log.warning("Dienst %s wird nicht aktiviert (Zustand: %s)", K.SERVICE, state or "unbekannt")
+                log.warning("Dienst %s wird nicht aktiviert (Zustand: %s)", K.SERVICE, state)
             return False
         r = _run(["systemctl", "--user", "enable", "--now", K.SERVICE], timeout=30.0)
     except (OSError, subprocess.TimeoutExpired) as e:
         log.warning("systemctl fehlgeschlagen: %s", e)
-        return False
+        return None
     if r.returncode != 0:
         log.warning("Dienst %s nicht aktiviert: %s", K.SERVICE, (r.stderr or r.stdout).strip())
-        return False
+        return None
     log.info("Dienst %s aktiviert und gestartet", K.SERVICE)
     return True
 
@@ -148,19 +155,72 @@ def autostart_entry() -> str:
     return template.replace("@BIN@", K.launcher())
 
 
-def sync_autostart(enabled: bool, path: Path = K.AUTOSTART_FILE) -> bool:
+def sync_autostart(enabled: bool, path: Path | None = None) -> bool:
     """Autostart-Datei an die Einstellung angleichen; True, wenn sich etwas geändert hat."""
+    path = path or K.AUTOSTART_FILE
     if not enabled:
         if path.exists():
-            path.unlink()
+            path.unlink(missing_ok=True)
             return True
         return False
     text = autostart_entry()
     if path.exists() and path.read_text() == text:
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    write_atomic(path, text)
     return True
+
+
+def expected_controls() -> dict[str, set[str]]:
+    """Label → Controls, die Kette und Tray setzen; fehlt eins im installierten Plugin, ist es veraltet."""
+    labels = {"beam": "uma8_beam", "limit": "uma8_limit"}
+    wanted: dict[str, set[str]] = {label: set() for label in labels.values()}
+    for key in (*all_params(Config()), *NULL_KEYS):
+        node, control = key.split(":", 1)
+        if node in labels:
+            wanted[labels[node]].add(control)
+    return wanted
+
+
+_api_checked: dict[tuple, str | None] = {}
+
+
+def beam_api_problem(path: Path) -> str | None:
+    """Meldung, wenn libuma8_beam.so unter `path` nicht ladbar ist oder Controls fehlen (alte Version, z. B. eine
+    vergessene Entwickler-Installation vor dem Paket: die Kette lädt dann mit stillen Warnungen, Controls wirken
+    nicht). Je Datei und Änderungszeit einmal geprüft; fehlt die Datei, None (das meldet Status.beam)."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if key not in _api_checked:
+        _api_checked.clear()
+        _api_checked[key] = _check_beam_api(path)
+    return _api_checked[key]
+
+
+def _check_beam_api(path: Path) -> str | None:
+    try:
+        found = ladspainfo.ports(path)
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
+        log.warning("%s nicht ladbar: %s", path, e)
+        return f"{K.BEAM_SO} nicht ladbar: {path} ({str(e).replace(f'{path}: ', '')})"
+    missing = sorted(f"„{c}“" for label, controls in expected_controls().items()
+                     for c in controls - set(found.get(label, ())))
+    if not missing:
+        return None
+    log.warning("%s veraltet, es fehlen: %s", path, ", ".join(missing))
+    fix = ("./install.sh im Repo erneut ausführen, beim Paket ./uninstall.sh" if path.parent == K.USER_LADSPA_DIR
+           else "Paket uma8-callmic aktualisieren")
+    return f"{K.BEAM_SO} veraltet: {path} (es fehlen {', '.join(missing)}). {fix}"
+
+
+def dev_leftovers() -> list[Path]:
+    """Reste von install.sh, wenn dieses Programm aus einem Paket läuft: Plugin und Dienst überdecken die des
+    Pakets, der Startbefehl in ~/.local/bin steht im PATH meist vor /usr/bin."""
+    if K.FROM_REPO:
+        return []
+    return [p for p in (K.USER_LADSPA_DIR / K.BEAM_SO, K.USER_UNIT, K.LAUNCHER) if p.exists()]
 
 
 @dataclass
@@ -172,14 +232,25 @@ class Status:
     beam: bool = True
     #: Echounterdrückung geladen oder nicht eingeschaltet
     aec: bool = True
+    #: Meldung von beam_api_problem: Plugin veraltet oder nicht ladbar
+    beam_api: str | None = None
+    #: Reste der Entwickler-Installation neben einem Paket (dev_leftovers)
+    leftovers: tuple[Path, ...] = ()
 
     @property
     def problem(self) -> str | None:
         if not self.dfn:
-            return ("DeepFilterNet nicht installiert (Paket deepfilternet-ladspa, "
-                    "Arch: AUR deepfilternet-plugin-pipewire-bin)")
+            return ("DeepFilterNet nicht installiert: Paket deepfilternet-ladspa aus diesem Repo (packaging/, siehe "
+                    "README); Arch alternativ AUR deepfilternet-plugin-pipewire-bin (mit Thread-Leck)")
         if not self.beam:
             return "Plugin libuma8_beam.so fehlt (Paket uma8-callmic oder ./install.sh)"
+        if self.beam_api:
+            return self.beam_api
+        if self.leftovers:
+            home = str(Path.home())
+            paths = ", ".join(str(p).replace(home, "~", 1) for p in self.leftovers)
+            return (f"Reste von install.sh überdecken das Paket ({paths}): im Repo ./uninstall.sh ausführen, "
+                    "dann UMA-8 Call Mic neu starten")
         if self.device == "dsp":
             return "Raw-Firmware nötig (Mikrofon läuft mit DSP-Firmware)"
         if self.device == "missing":
@@ -221,6 +292,8 @@ def status(echo_cancel: bool = False, objs: list[dict] | None = None) -> Status:
         running = service_active()
     except (OSError, subprocess.TimeoutExpired):
         running = False
+    beam = K.beam_plugin()
     return Status(device_state(objs), running, find_node(objs, K.CAPTURE_NODE) is not None,
-                  K.dfn_plugin().exists(), K.beam_plugin().exists(),
-                  not echo_cancel or find_node(objs, K.AEC_NODE) is not None)
+                  K.dfn_plugin().exists(), beam.exists(),
+                  not echo_cancel or find_node(objs, K.AEC_NODE) is not None,
+                  beam_api_problem(beam), tuple(dev_leftovers()))

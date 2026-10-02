@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 
 from uma8_callmic import pwctl
@@ -69,6 +72,12 @@ def test_status_problem_priority():
     assert Status("raw", True, False, True, aec=False).problem.startswith("Filterkette")
     assert Status("raw", True, True, True, aec=False).problem.startswith("Echounterdrückung nicht geladen")
     assert Status("raw", True, True, True).problem is None
+    stale = "libuma8_beam.so veraltet: /x"
+    assert Status("missing", False, False, True, beam_api=stale).problem == stale
+    assert Status("raw", True, True, False, beam_api=stale).problem.startswith("DeepFilterNet")
+    left = Status("missing", True, True, True, leftovers=(Path.home() / ".local/lib/ladspa/libuma8_beam.so",))
+    assert "./uninstall.sh" in left.problem and "~/.local/lib/ladspa/libuma8_beam.so" in left.problem
+    assert Status("raw", True, True, True, beam_api=stale, leftovers=left.leftovers).problem == stale
 
 
 def _node(i, name, media_class="Audio/Source"):
@@ -114,22 +123,24 @@ def test_ensure_service_enabled_enables_disabled_unit(monkeypatch):
     assert calls[-1] == ["systemctl", "--user", "enable", "--now", pwctl.K.SERVICE]
 
 
-@pytest.mark.parametrize("state", ["enabled", "static", "masked", "not-found", ""])
-def test_ensure_service_enabled_leaves_other_states_alone(monkeypatch, state):
+@pytest.mark.parametrize("state,result", [("enabled", False), ("static", False), ("masked", False),
+                                          ("not-found", None), ("", None)])
+def test_ensure_service_enabled_leaves_other_states_alone(monkeypatch, state, result):
+    """False: nichts zu tun (auch maskiert bleibt maskiert); None: Dienst unbekannt, später erneut versuchen."""
     calls = _fake_systemctl(monkeypatch, state)
-    assert pwctl.ensure_service_enabled() is False
+    assert pwctl.ensure_service_enabled() is result
     assert all("enable" not in c for c in calls)
 
 
 def test_ensure_service_enabled_never_raises(monkeypatch):
     _fake_systemctl(monkeypatch, "disabled", enable_rc=1)
-    assert pwctl.ensure_service_enabled() is False
+    assert pwctl.ensure_service_enabled() is None
 
     def broken(args, timeout=5.0):
         raise FileNotFoundError("systemctl")
 
     monkeypatch.setattr(pwctl, "_run", broken)
-    assert pwctl.ensure_service_enabled() is False
+    assert pwctl.ensure_service_enabled() is None
 
 
 def test_sync_autostart(tmp_path, monkeypatch):
@@ -147,6 +158,55 @@ def test_sync_autostart(tmp_path, monkeypatch):
     assert pwctl.sync_autostart(False, path) is False
 
 
+def test_beam_api_matches_built_plugin(plugin_so):
+    """Das gebaute Plugin hat jedes Control, das Kette und Tray setzen (auch eine neue Einstellung ohne Port fiele
+    hier auf)."""
+    assert pwctl.ladspainfo.ports(plugin_so)["uma8_beam"][:2] == ["In 0", "In 1"]
+    pwctl._api_checked.clear()
+    assert pwctl.beam_api_problem(Path(plugin_so)) is None
+
+
+def test_beam_api_reports_stale_or_broken_plugin(tmp_path, monkeypatch):
+    """Alte Version (fehlende Controls) oder nicht ladbar: Meldung statt Absturz; je Änderungszeit einmal geprüft."""
+    so = tmp_path / "libuma8_beam.so"
+    so.write_bytes(b"kein ELF")
+    pwctl._api_checked.clear()
+    problem = pwctl.beam_api_problem(so)                        # echter Kindprozess, scheitert am Laden
+    assert problem.startswith(f"libuma8_beam.so nicht ladbar: {so} (OSError: ")
+    calls = []
+    old = {"uma8_beam": ["In 0", "Mode", "Gain (dB)"], "uma8_limit": ["In", "Out", "Ceiling (dB)"]}
+    monkeypatch.setattr(pwctl.ladspainfo, "ports", lambda path: calls.append(path) or old)
+    os.utime(so, ns=(1, 1))
+    problem = pwctl.beam_api_problem(so)
+    assert problem.startswith(f"libuma8_beam.so veraltet: {so}") and "„Null Weight (dB)“" in problem
+    assert "„Late Reverb“" in problem and "„Ceiling (dB)“" not in problem and "Paket" in problem
+    assert pwctl.beam_api_problem(so) == problem and len(calls) == 1
+    monkeypatch.setattr(pwctl.ladspainfo, "ports", lambda path: (_ for _ in ()).throw(
+        pwctl.subprocess.TimeoutExpired("python3", 10)))
+    os.utime(so, ns=(2, 2))
+    assert "nicht ladbar" in pwctl.beam_api_problem(so)
+    assert pwctl.beam_api_problem(tmp_path / "fehlt.so") is None   # Fehlen meldet Status.beam
+    monkeypatch.setattr(pwctl.K, "USER_LADSPA_DIR", tmp_path)
+    monkeypatch.setattr(pwctl.ladspainfo, "ports", lambda path: old)
+    os.utime(so, ns=(3, 3))
+    assert "./install.sh" in pwctl.beam_api_problem(so)
+
+
+def test_dev_leftovers_only_when_running_from_package(tmp_path, monkeypatch):
+    plugin, unit, launcher = tmp_path / "ladspa", tmp_path / "unit.service", tmp_path / "uma8-callmic"
+    monkeypatch.setattr(pwctl.K, "USER_LADSPA_DIR", plugin)
+    monkeypatch.setattr(pwctl.K, "USER_UNIT", unit)
+    monkeypatch.setattr(pwctl.K, "LAUNCHER", launcher)
+    monkeypatch.setattr(pwctl.K, "FROM_REPO", False)
+    assert pwctl.dev_leftovers() == []
+    plugin.mkdir()
+    (plugin / pwctl.K.BEAM_SO).touch()
+    unit.touch()
+    assert pwctl.dev_leftovers() == [plugin / pwctl.K.BEAM_SO, unit]
+    monkeypatch.setattr(pwctl.K, "FROM_REPO", True)            # install.sh selbst: das sind keine Reste
+    assert pwctl.dev_leftovers() == []
+
+
 def test_status_checks_aec_only_when_enabled(monkeypatch):
     aec = {"id": 79, "type": "PipeWire:Interface:Node", "info": {"props": {"node.name": "uma8_callmic_aec"}}}
     monkeypatch.setattr(pwctl, "service_active", lambda: True)
@@ -156,6 +216,14 @@ def test_status_checks_aec_only_when_enabled(monkeypatch):
     assert st.chain and not st.aec
     monkeypatch.setattr(pwctl, "dump", lambda: OBJS + [aec])
     assert pwctl.status(echo_cancel=True).aec is True
+
+
+def test_status_reports_plugin_api_and_leftovers(monkeypatch):
+    monkeypatch.setattr(pwctl, "service_active", lambda: True)
+    monkeypatch.setattr(pwctl, "beam_api_problem", lambda path: f"veraltet: {path.name}")
+    monkeypatch.setattr(pwctl, "dev_leftovers", lambda: [Path("/rest")])
+    st = pwctl.status(echo_cancel=False, objs=OBJS)
+    assert st.beam_api == f"veraltet: {pwctl.K.BEAM_SO}" and st.leftovers == (Path("/rest"),)
 
 
 def test_tracking_follows_echo_cancel(monkeypatch):

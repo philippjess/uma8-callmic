@@ -26,5 +26,6 @@ testpaths = ["tests"]
 markers = [
     "integration: braucht laufendes PipeWire und installiertes Plugin",
     "hardware: braucht das angeschlossene UMA-8",
+    "timing: misst Rechenzeit gegen eine feste Grenze (in den Paket-Builds abgewählt: langsame Bauhosts)",
 ]
 addopts = "-m 'not integration and not hardware'"

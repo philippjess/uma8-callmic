@@ -61,21 +61,43 @@ def test_options_nulls_only_with_measured_speakers(app):
     dlg = OptionsDialog(Config(), changes.append, lambda: None, meter=False)
     assert not dlg.nulls.isEnabled() and not dlg.nulls.isChecked()
     dlg.gain.setValue(40)
-    assert changes[-1]["null_weight_db"] == 0.0                 # ohne Profil bleibt alles aus
+    assert "null_weight_db" not in changes[-1]                  # nur, wenn hier umgeschaltet
     dlg.close()
     dlg = OptionsDialog(Config(speakers=[[100.0, 5.0]], null_weight_db=15.0), changes.append, lambda: None,
                         meter=False)
     assert dlg.nulls.isEnabled() and dlg.nulls.isChecked()
     dlg.nulls.setChecked(False)
-    assert changes[-1]["null_weight_db"] == 0.0
+    assert changes[-1] == {"null_weight_db": 0.0}
     dlg.nulls.setChecked(True)
-    assert changes[-1]["null_weight_db"] == 15.0                # eigenes Gewicht bleibt erhalten
+    assert changes[-1] == {"null_weight_db": 15.0}              # eigenes Gewicht bleibt erhalten
     dlg.beamformer.setCurrentIndex(1)
     assert not dlg.nulls.isEnabled()                            # nur superdirektiv
     dlg.close()
     dlg = OptionsDialog(Config(speakers=[[100.0, 5.0]]), changes.append, lambda: None, meter=False)
     dlg.nulls.setChecked(True)
     assert changes[-1]["null_weight_db"] == 10.0                # empfohlener Wert
+    dlg.close()
+
+
+def test_options_follow_profile_saved_elsewhere(app):
+    """Assistent speichert bei offenem Optionen-Dialog: Der Dialog zeigt das neue Profil und überschreibt die
+    Nullstellen nicht, wenn danach ein anderer Regler bewegt wird."""
+    changes = []
+    cfg = Config()
+    dlg = OptionsDialog(cfg, changes.append, lambda: None, meter=False)
+    cfg.speakers, cfg.null_weight_db = [[100.0, 5.0], [260.0, 5.0]], 12.0
+    cfg.calibrated, cfg.calibrated_azimuth = True, 180.0
+    dlg.sync_profile(cfg)
+    assert changes == []                                        # Anzeigen meldet nichts
+    assert dlg.nulls.isEnabled() and dlg.nulls.isChecked() and "180°" in dlg.cal_label.text()
+    dlg.gain.setValue(33)
+    assert "null_weight_db" not in changes[-1]
+    dlg.nulls.setChecked(False)
+    dlg.nulls.setChecked(True)
+    assert changes[-1] == {"null_weight_db": 12.0}
+    cfg.speakers, cfg.null_weight_db = [], 0.0                  # Profil gelöscht
+    dlg.sync_profile(cfg)
+    assert not dlg.nulls.isEnabled() and not dlg.nulls.isChecked() and changes[-1] == {"null_weight_db": 12.0}
     dlg.close()
 
 

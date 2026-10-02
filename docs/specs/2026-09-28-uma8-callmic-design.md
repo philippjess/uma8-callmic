@@ -328,12 +328,23 @@ Pegelregelung, damit die AEC der Anruf-Programme nicht gestört wird.
   Aktiv: Gain 1 = 1, Gain 2 = 0; deaktiviert umgekehrt. Beim Umschalten
   werden die Gains in 10 Schritten gesetzt, um Klicks zu vermeiden. Die
   Latenz des Roh-Wegs gleicht `uma8_beam` über „Raw Extra Delay“ an.
-- DeepFilterNet: `/usr/lib/ladspa/libdeep_filter_ladspa.so`, Label
-  `deep_filter_mono` (AUR `deepfilternet-plugin-pipewire-bin`, installiert
-  und geprüft). Control „Attenuation Limit (dB)“ (0–100) = Optionswert
-  „Rauschunterdrückung“. Die vom Paket mitgelieferte Beispielkette
+- DeepFilterNet: `libdeep_filter_ladspa.so`, Label `deep_filter_mono`,
+  bevorzugt aus dem Paket `deepfilternet-ladspa` dieses Repos (RPM bzw.
+  PKGBUILD: 0.5.6 mit behobenem Thread-Leck). Das AUR-Paket
+  `deepfilternet-plugin-pipewire-bin` geht auch, behält aber das Leck.
+  Control „Attenuation Limit (dB)“ (0–100) = Optionswert
+  „Rauschunterdrückung“. Die vom AUR-Paket mitgelieferte Beispielkette
   (`/etc/pipewire/filter-chain.conf.d/deepfilter-mono-source.conf`,
   Dienst `filter-chain.service`) bleibt deaktiviert.
+- Plugin-Pfade (`constants.find_plugin`, bei jedem Schreiben der
+  Konfiguration neu bestimmt): erster vorhandener Ort aus
+  `~/.local/lib/ladspa` (Entwickler-Installation), `/usr/lib64/ladspa`
+  (Fedora), `/usr/lib/ladspa` (Arch). Ein Ort, der nur ein anderer Name
+  eines anderen, kanonischen Suchorts ist (Arch: `/usr/lib64` → `lib`),
+  entfällt; ein per Symlink verlegtes `~/.local/lib` bleibt. Ist nichts
+  installiert, gilt der erste Systemort (Fedora `/usr/lib64/ladspa`, Arch
+  `/usr/lib/ladspa`), das Tray meldet das Fehlen. `UMA8_BEAM_PLUGIN` bzw.
+  `UMA8_DFN_PLUGIN` erzwingen einen Pfad.
 - Parameteränderungen zur Laufzeit: `pw-cli set-param <node> Props
   '{ params = [ "<plugin>:<control>" <wert> ] }'` auf dem Capture-Knoten
   der Kette. Alle Controls einschließlich Geometrie sind live änderbar;
@@ -505,6 +516,14 @@ Bekannte Nachteile:
   Aufnahme“).
 - Nur Ton auf der Standardausgabe wird entfernt. Gibt das Anruf-Programm auf
   einem anderen Gerät aus, bleibt dessen Echo.
+- Die Referenz ist stereo (`FL FR`). Von einer Mehrkanal-Standardausgabe
+  (z. B. 5.1) verbindet der Helfer nur die Monitor-Ports FL und FR (Zuordnung
+  nach Kanalnamen); was nur über Mitte, LFE oder hinten kommt, fehlt in der
+  Referenz und bleibt als Echo; auch Stereo-Ton eines Anruf-Programms, den
+  PipeWire per Upmix (`channelmix.upmix`) auf Mitte oder hinten verteilt.
+  Mit Stereo-Ausgaben (Laptop, Kopfhörer, USB-Lautsprecher) tritt das nicht
+  auf. Eine Mehrkanal-Referenz hieße mehr Referenzkanäle für die AEC, nicht
+  umgesetzt und nicht gemessen.
 - Die eigene AEC der Anruf-Programme darf an bleiben; sie findet kaum noch
   Echo.
 
@@ -531,6 +550,7 @@ Module:
 | `reflink.py` | Echo-Referenz nur während einer Aufnahme verbinden (`uma8-callmic --ref-linker`, gestartet per `context.exec` der Kette): `pw-dump --monitor` lesen, Monitor der Standardausgabe per `pw-link` verbinden/trennen; Entscheidungslogik ohne PipeWire testbar |
 | `tracker.py` | Nachführung: alle 0,2 s DOA bei Sprache, Median über 1 s, Hysterese 15°, setzt Azimuth. Mit Arbeitsplatz-Profil nur Schätzungen in der Sprechzone und nicht bei den Lautsprechern (`Zone`). Hört mit Echounterdrückung auf `uma8_callmic_aec` (7 Kanäle): Im Anruf ist Sprache aus den Lautsprechern dort entfernt, der Strahl folgt dann nicht dem Lautsprecher; ohne Anruf ist die Referenz getrennt (im Test erkannte die Sprachaktivität Lautsprecher-Sprache vor der AEC in 39 von 43 Blöcken, dahinter in 3). Kalibrierung und Kanalzuordnung lesen weiter das UMA-8 direkt. Endet die Aufnahme (Kette neu gestartet), verbindet das Tray neu |
 | `chainconf.py` | erzeugt `uma8-callmic.conf` aus Vorlage und Einstellungen |
+| `ladspainfo.py` | Labels und Portnamen eines LADSPA-Plugins per ctypes, in einem Kindprozess (dlopen lädt einen geladenen Pfad nie neu, ein kaputtes `.so` reißt das Tray nicht mit); erkennt ein veraltetes `libuma8_beam.so` |
 | `tray.py` | Icon, Menü, Umschalten, Zustandsabfrage alle 2 s (ein `pw-dump` je Durchlauf); Nachführung nur während einer Aufnahme |
 | `dialogs.py` | Optionen, Kalibrierung, Kanalzuordnung |
 | `workspace.py` | Arbeitsplatz-Profil ohne GUI: Testsignal, Ablauf und Auswertung der Lautsprechermessung, Tastatur, Pegel, Live-Auswertung, Platzierungshinweise |
@@ -543,7 +563,7 @@ Tray-Zustände:
 |---|---|
 | farbig | aktiv (Beam-Weg) |
 | grau | deaktiviert (Roh-Weg) |
-| rot | Problem: Gerät fehlt, falsche Firmware, Dienst läuft nicht, DeepFilterNet fehlt, Echounterdrückung nicht geladen; Details im Tooltip |
+| rot | Problem: DeepFilterNet oder `libuma8_beam.so` fehlt, `libuma8_beam.so` veraltet oder nicht ladbar, Reste von `install.sh` neben einem Paket, falsche Firmware, Gerät fehlt, Dienst läuft nicht, Kette nicht geladen, Echounterdrückung nicht geladen (in dieser Rangfolge); Details im Tooltip |
 
 Linksklick = umschalten. Rechtsklick-Menü: ☑ Aktiv · Kalibrieren… ·
 Arbeitsplatz einmessen… · Platzierung… · Optionen… · Beenden (nur Tray;
@@ -720,18 +740,78 @@ Wiedergabe getestet (`tests/desksim.py`), nie mit echter Wiedergabe.
 
 ### 6. Installation
 
-`install.sh` (ohne root):
+Drei Wege, die sich gegenseitig ausschließen:
 
-1. prüft PipeWire, Python-Module (PySide6, numpy), Raw-Firmware
-2. prüft Rust-Toolchain und DeepFilterNet-Plugin; fehlt es, Hinweis auf
-   `yay -S deepfilternet-plugin-pipewire-bin` und Abbruch
-3. baut das Plugin (`cargo build --release`) und kopiert
-   `libuma8_beam.so` nach `~/.local/lib/ladspa/`
-4. installiert das Python-Paket als Link auf das Repo, Dienst-Datei nach
-   `~/.config/systemd/user/`, Autostart-Eintrag nach `~/.config/autostart/`
-5. aktiviert und startet den Dienst
+- **Fedora-RPMs** (`packaging/build-rpms.sh`, Podman mit Fedora 44, Quellen
+  per tar über stdin, eingebunden wird nur `packaging/out/`): `uma8-callmic`
+  (Tray, Plugin in `/usr/lib64/ladspa`, Benutzerdienst in
+  `/usr/lib/systemd/user`, Startmenü-Eintrag) und `deepfilternet-ladspa`.
+  `%check` führt Unit- und Rust-Tests aus, ohne die Rechenzeit-Tests (Marker
+  `timing`).
+- **Arch-Pakete** (`packaging/arch/*/PKGBUILD`, im Checkout `makepkg -si`
+  oder `packaging/build-arch.sh` in Podman mit `archlinux:latest`): dieselben
+  zwei Pakete, Plugins in `/usr/lib/ladspa`; `deepfilternet-ladspa` ersetzt
+  das AUR-Paket. `check()` wie `%check`.
+- **Entwickler-Installation** `install.sh` (ohne root, läuft aus dem Repo):
+  1. verweigert sich, solange das Paket `uma8-callmic` installiert ist
+     (`rpm -q` bzw. `pacman -Q`): Plugin und Dienst in `~` gingen dem Paket
+     vor
+  2. prüft PipeWire, `pactl`, Rust, PySide6, numpy und das
+     DeepFilterNet-Plugin; fehlt es, Hinweis auf das Paket
+     `deepfilternet-ladspa` dieses Repos (AUR-Paket nur als Alternative,
+     wegen des Lecks) und Abbruch
+  3. baut das Plugin und kopiert `libuma8_beam.so` nach `~/.local/lib/ladspa/`
+  4. beendet ein laufendes Tray (jede Installationsform, nicht die
+     Hilfsbefehle): ein altes Tray setzte sonst seine alten Werte in die neue
+     Kette
+  5. Startbefehl `~/.local/bin/uma8-callmic` (`PYTHONPATH` aufs Repo),
+     Konfiguration, Dienst-Datei nach `~/.config/systemd/user/`, aktiviert
+     und startet den Dienst neu, Startmenü-Eintrag, Autostart (außer
+     `autostart = false`), Standard-Mikrofon
+  6. startet das beendete Tray wieder (nur in einer grafischen Sitzung)
 
-`uninstall.sh` entfernt alles davon wieder; Einstellungen nur auf Nachfrage.
+`uninstall.sh` entfernt die Einrichtung des Benutzers (Dienst, Dateien in
+`~`, Autostart; beendet Tray und Helfer jeder Installationsform) und löscht
+die Einstellungen nur auf Nachfrage; behaltene Einstellungen verlieren
+`setup_done`, damit ein Paket-Tray sich danach neu einrichtet. Pakete bleiben
+installiert (Hinweis).
+
+Dienst: `ExecStartPre=<Startbefehl> --write-config` schreibt die
+Kettenkonfiguration vor jedem Start aus den Einstellungen, auch wenn das
+Tray nie lief; `ExecStart=/usr/bin/pipewire -c …/uma8-callmic.conf`.
+Konfiguration, Einstellungen und Autostart-Datei werden atomar geschrieben
+(temporäre Datei, `os.replace`): Tray und `ExecStartPre` schreiben beim Login
+womöglich gleichzeitig.
+
+Einrichtung durch das Tray (Pakete, die nichts selbst aktivieren): beim
+ersten Start Autostart nach Einstellung anlegen und den Dienst aktivieren
+(`systemctl --user enable --now`, nur im Zustand „disabled“), dann
+`setup_done = true` speichern. Ältere Einstellungen ohne den Schlüssel
+durchlaufen das einmal (für schon Eingerichtete ohne Wirkung); scheitert
+systemctl, beim nächsten Start erneut. Danach ändert das Tray beides nie
+mehr von selbst: Ein per `systemctl --user disable` abgeschalteter Dienst und
+ein gelöschter Autostart-Eintrag bleiben so, die Option „Beim Login starten“
+zeigt den echten Zustand und ist der einzige Schalter.
+
+Prüfungen im Tray gegen gemischte Installationen:
+
+- Plugin-API: Die Ports von `libuma8_beam.so` werden per `ladspainfo.py`
+  gelesen (je Pfad und Änderungszeit einmal) und mit allen Controls
+  verglichen, die Kette und Tray setzen. Fehlt eins (alte Version: die Kette
+  lädt dann mit stillen Warnungen, Controls wirken nicht, Modus 2 wird zu
+  „alle Richtungen“, negative Verstärkung zu 0), ist das Icon rot:
+  „libuma8_beam.so veraltet: <Pfad> …“; nicht ladbar ebenso.
+- Läuft das Programm aus einem Paket (nicht aus einem Checkout) und liegen
+  noch `~/.local/lib/ladspa/libuma8_beam.so`,
+  `~/.config/systemd/user/uma8-callmic-chain.service` oder
+  `~/.local/bin/uma8-callmic` herum: rot mit Hinweis auf `./uninstall.sh`.
+
+Mindestversion PipeWire 1.2.0 (RPM `pipewire >= 1.2.0`, Arch
+`pipewire>=1:1.2.0`): `context.exec` nimmt erst ab 1.2.0 (`conf.c`,
+`pw_strv_parse`, Entwicklungsstand 1.1.81) Argumente als Array; 1.0.x setzt
+den Rohtext an den Pfad und zerlegt ihn an Leerzeichen, der Helfer bekäme
+`[ "--ref-linker" ]` als drei Argumente. Alles andere (`monitor.mode` des
+Echo-Cancel-Moduls, builtin `linear`/`mixer`) gibt es schon in 1.0.
 
 ## Fehlerbehandlung
 
@@ -745,7 +825,10 @@ Wiedergabe getestet (`tests/desksim.py`), nie mit echter Wiedergabe.
 | Echounterdrückung an, aber nicht in der laufenden Kette | Tray rot: „Echounterdrückung nicht geladen (Dienst … neu starten)“ |
 | Referenz-Helfer beendet | Mikrofon läuft weiter, bei neuen Anrufen ohne Echounterdrückung; startet mit dem Dienst neu (Meldungen im Journal des Dienstes) |
 | Kaputte config.toml | Standardwerte, Hinweis im Tray; vor dem nächsten Speichern wird die kaputte Datei als `config.toml.broken` gesichert |
-| `pw-cli` schlägt fehl | Fehler im Tooltip und im Log (`~/.local/state/uma8-callmic/log`) |
+| `pw-cli` schlägt fehl | Meldung im Log (`~/.local/state/uma8-callmic/log`), Kette läuft mit den bisherigen Werten weiter; startet sie neu, setzt das Tray alle Werte erneut |
+| `libuma8_beam.so` veraltet oder nicht ladbar | Tray rot mit Pfad und fehlenden Controls; Prüfung im Kindprozess, das Tray selbst stürzt nie |
+| Paket installiert, Reste von `install.sh` in `~` | Tray rot mit den Pfaden: `./uninstall.sh` ausführen |
+| `--ref-linker`: unerwartete Ausnahme | protokolliert (Journal des Dienstes), Neustart mit derselben Pause wie bei Fehlern von pw-dump (2 s, bis 60 s) |
 | Lautsprechermessung: nichts am Mikrofon | Meldung je Kanal (Lautstärke, Standardausgabe prüfen); ein gehörter Kanal reicht für ein Profil |
 | Lautsprechermessung: `pw-play` scheitert oder hängt | Meldung mit Rückgabewert; nach 8,5 s abgebrochen |
 
@@ -776,7 +859,7 @@ Plugin, zwei Ebenen:
   diffus 3,5 dB stärker als direkt); Schwanz mindestens 8 dB (Kohärenz) bzw.
   14 dB (mit spätem Nachhall) leiser, Stoß höchstens 4 dB
 - Robustheit: Stille, Vollaussteuerung, NaN-freie Ausgabe, Blockgrößen 1–4096
-- CPU: Plugin verarbeitet 10 s Audio in ≤ 0,25 s (Bestwert aus drei Läufen), auch mit Nullstellen, die alle 0,5 s verschoben werden
+- CPU: Plugin verarbeitet 10 s Audio in ≤ 0,25 s (Bestwert aus drei Läufen), auch mit Nullstellen, die alle 0,5 s verschoben werden (Marker `timing`: für Entwickler an, in den Paket-Builds abgewählt)
 - Robustheit der Verteilung: Neuentwurf je `run()` begrenzt, Eingangsbegrenzung ±1000 und nicht endliche Eingänge ohne dauerhafte Dämpfung
 
 Python (pytest):
@@ -818,16 +901,23 @@ und ein echter Anruf.
 
 ```
 uma8-callmic/
-├── plugin/            Rust-Crate: Cargo.toml, src/{lib.rs, ladspa.rs (LADSPA-Hülle), plugins.rs, pipeline.rs,
-│                      stft.rs, beam.rs, jacobi.rs, cdr.rs, dereverb.rs, limiter.rs}
-├── tools/             eval_dereverb.py + roomsim.py (Raumsimulation), offline.py (Aufnahme verarbeiten),
-│                      check_output.py
-├── uma8_callmic/      Python-Paket (Module siehe oben), icons/
-├── pipewire/          chain.conf.in, uma8-callmic-chain.service, uma8-callmic.desktop
-├── tests/             test_plugin.py, test_doa.py, test_geometry.py, test_config.py
-├── firmware/          docker-compose.usb.yml (Firmware-Dateien lokal, nicht im Repo)
-├── docs/specs/        dieses Dokument
-├── install.sh, uninstall.sh, README.md
+├── plugin/              Rust-Crate (cdylib): src/{lib.rs, ladspa.rs (LADSPA-Hülle), plugins.rs (uma8_beam,
+│                        uma8_limit), pipeline.rs, stft.rs, beam.rs, jacobi.rs, cdr.rs, dereverb.rs, limiter.rs},
+│                        tests/no_alloc.rs (run() ohne Allokation), examples/run_cost.rs
+├── uma8_callmic/        Python-Paket (Module siehe oben), data/{uma8-callmic.conf.in, uma8-callmic-aec.conf.in,
+│                        uma8-callmic.desktop}, icons/{active,inactive,error}.svg
+├── pipewire/            uma8-callmic-chain.service (@BIN@ setzen install.sh bzw. die Pakete)
+├── tests/               test_*.py je Modul (array, beampattern, beam_plugin, calibration, capture, chainconf,
+│                        config, dfn_latency, dialogs, doa, geometry, limit_plugin, params, pwctl, reflink, roomsim,
+│                        tracker, tray, traystate, workspace, workspace_ui); Hilfen: conftest.py (baut plugin/),
+│                        ladspa_host.py, sim.py, desksim.py, spajson.py; data/reflink_graphs.json
+├── tools/               roomsim.py, eval_dereverb.py, eval_nulls.py (Raumsimulation, Auswertung),
+│                        offline.py (Aufnahme verarbeiten), check_output.py (mit Gerät)
+├── packaging/           uma8-callmic.spec, deepfilternet-ladspa.spec (+ .sources, Patches), build-rpms.sh,
+│                        rpmlint.toml, arch/{uma8-callmic,deepfilternet-ladspa}/PKGBUILD, build-arch.sh
+├── firmware/            docker-compose.usb.yml (Firmware-Dateien lokal, nicht im Repo)
+├── docs/                specs/ (dieses Dokument), plans/
+├── install.sh, uninstall.sh, pyproject.toml, README.md
 ```
 
 Die miniDSP-Firmware-Dateien, der Windows-Treiber und das DFU-Tool sind

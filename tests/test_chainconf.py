@@ -2,6 +2,7 @@ import math
 import re
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 from spajson import loads
@@ -157,7 +158,7 @@ def test_template_comes_from_package():
 @pytest.fixture
 def ladspa_dirs(tmp_path, monkeypatch):
     """Drei leere Suchorte in der Reihenfolge von K.LADSPA_DIRS (lokal, RPM, /usr/lib)."""
-    dirs = tuple(tmp_path / name for name in ("local", "lib64", "lib"))
+    dirs = tuple(tmp_path.resolve() / name for name in ("local", "lib64", "lib"))
     for d in dirs:
         d.mkdir()
     monkeypatch.setattr(K, "LADSPA_DIRS", dirs)
@@ -177,16 +178,54 @@ def test_plugin_search_order(ladspa_dirs):
     assert K.dfn_plugin() == local / K.DFN_SO
 
 
-def test_plugin_dir_under_symlink_is_skipped(tmp_path, monkeypatch):
-    """Arch: /usr/lib64 ist ein Symlink auf lib – gemeint ist /usr/lib/ladspa, auch ohne installiertes Plugin."""
-    (tmp_path / "lib" / "ladspa").mkdir(parents=True)
-    (tmp_path / "lib64").symlink_to("lib")
-    local, lib64, lib = tmp_path / "local", tmp_path / "lib64" / "ladspa", tmp_path / "lib" / "ladspa"
-    monkeypatch.setattr(K, "LADSPA_DIRS", (local, lib64, lib))
+def _usr(root: Path, lib64_symlink: bool, monkeypatch) -> tuple[Path, Path, Path]:
+    """Suchorte unter root wie auf Arch (lib64 → lib) oder Fedora (eigenes lib64), lokal ohne ladspa-Verzeichnis."""
+    (root / "usr/lib").mkdir(parents=True)
+    if lib64_symlink:
+        (root / "usr/lib64").symlink_to("lib")
+    else:
+        (root / "usr/lib64").mkdir()
+    dirs = (root / "home/.local/lib/ladspa", root / "usr/lib64/ladspa", root / "usr/lib/ladspa")
+    monkeypatch.setattr(K, "LADSPA_DIRS", dirs)
     monkeypatch.delenv("UMA8_DFN_PLUGIN", raising=False)
+    return dirs
+
+
+def test_plugin_nothing_installed_gives_distro_dir(tmp_path, monkeypatch):
+    """Nichts installiert, nicht einmal ein ladspa-Verzeichnis: der Systemort der Distribution, nie ein Fehler
+    (sonst scheiterten ExecStartPre und das Tray)."""
+    _, lib64, _ = _usr(tmp_path.resolve() / "fedora", False, monkeypatch)
+    assert K.dfn_plugin() == lib64 / K.DFN_SO
+    _, _, lib = _usr(tmp_path.resolve() / "arch", True, monkeypatch)
+    assert K.dfn_plugin() == lib / K.DFN_SO
+
+
+def test_plugin_dir_alias_is_skipped(tmp_path, monkeypatch):
+    """Arch: /usr/lib64 ist ein Symlink auf lib – gemeint ist /usr/lib/ladspa, gefunden und als Rückfall."""
+    _, lib64, lib = _usr(tmp_path.resolve(), True, monkeypatch)
+    assert K.search_dirs() == [K.LADSPA_DIRS[0], lib]
+    lib.mkdir()
     assert K.dfn_plugin() == lib / K.DFN_SO
     (lib / K.DFN_SO).touch()
-    assert K.dfn_plugin() == lib / K.DFN_SO
+    assert (lib64 / K.DFN_SO).exists() and K.dfn_plugin() == lib / K.DFN_SO
+
+
+@pytest.mark.parametrize("arch", [False, True])
+def test_symlinked_local_lib_is_searched(tmp_path, monkeypatch, arch):
+    """Ein per Symlink verlegtes ~/.local/lib ist kein Alias eines anderen Suchorts und gilt weiter; ohne Plugin
+    bleibt der Rückfall der Systemort (früher IndexError auf Arch)."""
+    root = tmp_path.resolve()
+    local, lib64, lib = _usr(root, arch, monkeypatch)
+    (root / "data/lib/ladspa").mkdir(parents=True)
+    local.parent.parent.mkdir(parents=True)
+    local.parent.symlink_to(root / "data/lib")
+    system = lib if arch else lib64
+    assert K.dfn_plugin() == system / K.DFN_SO
+    system.mkdir()
+    (system / K.DFN_SO).touch()
+    assert K.dfn_plugin() == system / K.DFN_SO
+    (local / K.DFN_SO).touch()
+    assert K.dfn_plugin() == local / K.DFN_SO
 
 
 def test_plugin_env_override_wins(ladspa_dirs, monkeypatch, tmp_path):

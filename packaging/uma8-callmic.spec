@@ -32,7 +32,8 @@ BuildRequires:  python3-numpy
 BuildRequires:  python3-pyside6
 BuildRequires:  python3-scipy
 
-Requires:       pipewire >= 1.0
+# context.exec mit Argumenten als Array (Echo-Referenz-Helfer): erst ab PipeWire 1.2.0, 1.0 zerlegte den Text
+Requires:       pipewire >= 1.2.0
 # pw-cli, pw-dump, pw-record
 Requires:       pipewire-utils
 # pactl
@@ -95,7 +96,8 @@ cd plugin
 cd ..
 # Einige Tests bauen plugin/ selbst: vendort und offline wie in %%prep eingerichtet
 export CARGO_HOME="$PWD/plugin/.cargo" QT_QPA_PLATFORM=offscreen
-%pytest
+# Ohne die Rechenzeit-Tests (Marker timing): Bauhosts können beliebig langsam oder ausgelastet sein
+%pytest -m 'not integration and not hardware and not timing'
 # Installiertes Paket außerhalb des Quellbaums: Einstiegspunkt und Vorlage aus dem Python-Paket
 testhome="$(mktemp -d)"
 (cd "$testhome" && HOME="$testhome" %{py3_test_envvars} %{buildroot}%{_bindir}/uma8-callmic --write-config)

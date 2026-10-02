@@ -200,10 +200,11 @@ def test_silence_and_full_scale(plugin_so):
     assert np.all(np.isfinite(loud["Beam Out"])) and np.all(np.isfinite(loud["Raw Out"]))
 
 
+@pytest.mark.timing
 def test_cpu_budget(plugin_so):
     """10 s Audio mit beiden Hallstufen. Entwicklungsrechner ≈ 0,11 s; die Grenze 0,25 s (2,5 % eines
-    Kerns) lässt langsameren oder ausgelasteten Bauhosts (rpmbuild %check) Luft, fängt aber echte
-    Fehler wie einen Neuentwurf je Frame (Sekunden) sicher. Bester von drei Läufen gegen Ausreißer."""
+    Kerns) fängt echte Fehler wie einen Neuentwurf je Frame (Sekunden) sicher. Bester von drei Läufen gegen
+    Ausreißer. In den Paket-Builds abgewählt (Marker „timing“): Bauhosts können beliebig langsam sein."""
     x = np.random.default_rng(1).standard_normal((480000, 7)) * 0.01
     ins = channels(x)
     runs = []
@@ -300,6 +301,7 @@ def test_null_change_is_click_free(plugin_so):
     assert np.max(np.abs(np.diff(y))) <= 2 * np.pi * 1000 / 48000 * 1.1 * np.max(np.abs(y))
 
 
+@pytest.mark.timing
 def test_cpu_budget_with_null_changes(plugin_so):
     """10 s Audio, Nullstellen an und alle 0,5 s verschoben (je ≈ 1,5 ms Entwurf, verteilt): nicht
     wesentlich teurer als ohne (Grenze wie test_cpu_budget)."""

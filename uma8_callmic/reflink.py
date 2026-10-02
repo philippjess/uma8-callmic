@@ -280,6 +280,9 @@ def run(metadata: str = "default") -> int:
             problem = "pw-dump beendet"
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as e:
             problem = f"Fehler: {e}"
+        except Exception as e:  # unerwartet (z. B. ungewohnte pw-dump-Ausgabe): nie für immer aussteigen
+            log.exception("Unerwarteter Fehler")
+            problem = f"unerwarteter Fehler: {e!r}"
         delay = RETRY_S if time.monotonic() - start > RETRY_MAX_S else delay
         log.warning("%s; Neustart in %g s", problem, delay)
         time.sleep(delay)

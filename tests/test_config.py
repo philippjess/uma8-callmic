@@ -1,4 +1,4 @@
-from uma8_callmic.config import PROFILE_FIELDS, Config, load, profile_defaults, save
+from uma8_callmic.config import PROFILE_FIELDS, Config, load, profile_defaults, save, write_atomic
 
 
 def test_missing_file_gives_defaults(tmp_path):
@@ -107,3 +107,19 @@ def test_invalid_profile_values_fall_back(tmp_path):
     res = load(path)
     assert res.config.speakers == [[100.0, 5.0]] and res.config.speaker_levels_dbfs == []
     assert any("Lautsprecherpegel" in w for w in res.warnings)
+
+
+def test_write_atomic_replaces_whole_file(tmp_path):
+    path = tmp_path / "neu" / "datei.conf"
+    write_atomic(path, "eins\n")
+    write_atomic(path, "zwei\n")
+    assert path.read_text() == "zwei\n" and [p.name for p in path.parent.iterdir()] == ["datei.conf"]
+
+
+def test_setup_flag_roundtrip_and_old_files(tmp_path):
+    """Ältere Dateien kennen „setup_done“ nicht: einmalige Einrichtung steht dann noch aus."""
+    path = tmp_path / "config.toml"
+    path.write_text("gain_db = 30.0\nautostart = true\n")
+    assert load(path).config.setup_done is False
+    save(Config(setup_done=True), path)
+    assert load(path).config.setup_done is True

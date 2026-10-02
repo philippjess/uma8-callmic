@@ -74,9 +74,8 @@ class OptionsDialog(QDialog):
             self.direction.addItem(text, key)
         self.direction.setCurrentIndex([k for _, k in DIRECTIONS].index(cfg.direction_mode))
         form.addRow("Richtung", self.direction)
-        cal = (f"Kalibriert: {cfg.calibrated_azimuth:.0f}°, Höhe {cfg.calibrated_elevation:.0f}°"
-               if cfg.calibrated else "Noch nicht kalibriert (Tray-Menü → Kalibrieren…)")
-        form.addRow("", QLabel(cal))
+        self.cal_label = QLabel()
+        form.addRow("", self.cal_label)
         self.manual = _slider(0, 359, cfg.manual_azimuth)
         self.manual_label = QLabel(f"{cfg.manual_azimuth:.0f}°")
         form.addRow("Winkel (manuell)", _with_label(self.manual, self.manual_label))
@@ -113,11 +112,6 @@ class OptionsDialog(QDialog):
         self.echo.setChecked(cfg.echo_cancel)
         form.addRow("", self.echo)
         self.nulls = QCheckBox(NULLS_TEXT)
-        self.nulls.setToolTip(NULLS_TOOLTIP if cfg.speakers else "Erst Lautsprecher einmessen (Tray-Menü → "
-                              "Arbeitsplatz einmessen…).")
-        self.nulls.setChecked(cfg.null_weight_db > 0)
-        self.has_speakers = bool(cfg.speakers)
-        self.null_weight_on = cfg.null_weight_db if cfg.null_weight_db > 0 else NULL_WEIGHT_DB
         form.addRow("", self.nulls)
         self.autostart = QCheckBox("Beim Login starten")
         self.autostart.setChecked(cfg.autostart)
@@ -130,12 +124,14 @@ class OptionsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(buttons)
+        self.sync_profile(cfg)
         for signal in (self.direction.currentIndexChanged, self.manual.valueChanged,
                        self.beamformer.currentIndexChanged, self.dereverb.toggled, self.late.toggled,
                        self.strength.valueChanged, self.t60.valueChanged, self.noise.valueChanged,
-                       self.gain.valueChanged, self.echo.toggled, self.nulls.toggled, self.autostart.toggled):
+                       self.gain.valueChanged, self.echo.toggled, self.autostart.toggled):
             signal.connect(self._changed)
-        self._update_enabled()
+        # Nullstellen nur melden, wenn der Nutzer sie hier umschaltet: Das Profil ändert sich auch im Assistenten
+        self.nulls.toggled.connect(self._nulls_toggled)
         self.capture = None
         if meter:
             self.capture = Capture(K.SOURCE_NODE, 1, seconds=1.0)
@@ -143,6 +139,20 @@ class OptionsDialog(QDialog):
             self.timer.timeout.connect(self._meter_tick)
             self.timer.start(100)
         self.finished.connect(self._cleanup)
+
+    def sync_profile(self, cfg: Config) -> None:
+        """Kalibrierung und Nullstellen aus `cfg` anzeigen, ohne eine Änderung zu melden (beim Öffnen und wenn
+        Assistent oder Kalibrierung bei offenem Dialog speichern)."""
+        self.cal_label.setText(f"Kalibriert: {cfg.calibrated_azimuth:.0f}°, Höhe {cfg.calibrated_elevation:.0f}°"
+                               if cfg.calibrated else "Noch nicht kalibriert (Tray-Menü → Kalibrieren…)")
+        self.has_speakers = bool(cfg.speakers)
+        self.null_weight_on = cfg.null_weight_db if cfg.null_weight_db > 0 else NULL_WEIGHT_DB
+        self.nulls.setToolTip(NULLS_TOOLTIP if cfg.speakers else "Erst Lautsprecher einmessen (Tray-Menü → "
+                              "Arbeitsplatz einmessen…).")
+        blocked = self.nulls.blockSignals(True)
+        self.nulls.setChecked(cfg.null_weight_db > 0)
+        self.nulls.blockSignals(blocked)
+        self._update_enabled()
 
     def _update_enabled(self) -> None:
         self.manual.setEnabled(self.direction.currentData() == "manual")
@@ -165,7 +175,6 @@ class OptionsDialog(QDialog):
             "noise_reduction_db": float(self.noise.value()),
             "gain_db": float(self.gain.value()),
             "echo_cancel": self.echo.isChecked(),
-            "null_weight_db": self.null_weight_on if self.nulls.isChecked() else 0.0,
             "autostart": self.autostart.isChecked(),
         }
         self.manual_label.setText(f"{updates['manual_azimuth']:.0f}°")
@@ -173,6 +182,9 @@ class OptionsDialog(QDialog):
         self.gain_label.setText(f"{updates['gain_db']:.0f} dB")
         self._update_enabled()
         self.on_change(updates)
+
+    def _nulls_toggled(self, checked: bool) -> None:
+        self.on_change({"null_weight_db": self.null_weight_on if checked else 0.0})
 
     def _meter_tick(self) -> None:
         block = self.capture.latest(4800) if self.capture else None

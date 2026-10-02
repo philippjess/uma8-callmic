@@ -88,7 +88,7 @@ mod tests {
     use super::*;
     use crate::beam::{Mode, Nulls, SPEED_OF_SOUND};
     use crate::stft::LATENCY;
-    use std::f32::consts::PI;
+    use std::f32::consts::{FRAC_1_SQRT_2, PI};
     const SR: f32 = 48000.0;
 
     fn params(mode: Mode, az: f32, el: f32) -> Params {
@@ -136,7 +136,7 @@ mod tests {
                 run(&mut Pipeline::new(SR, &params(mode, 90.0, 20.0)), &x, 0, len, &mut on);
                 run(&mut Pipeline::new(SR, &params(mode, 270.0, 20.0)), &x, 0, len, &mut off);
                 let (r_on, r_off) = (rms(&on[2 * LATENCY..]), rms(&off[2 * LATENCY..]));
-                assert!((r_on - 0.7071).abs() < 0.01, "{mode:?} {f} Hz: on-axis rms {r_on}");
+                assert!((r_on - FRAC_1_SQRT_2).abs() < 0.01, "{mode:?} {f} Hz: on-axis rms {r_on}");
                 let db = 20.0 * (r_on / r_off).log10();
                 let need = if mode == Mode::DelayAndSum && f < 2000.0 { 1.0 } else { 6.0 };
                 assert!(db >= need, "{mode:?} {f} Hz: nur {db} dB");
