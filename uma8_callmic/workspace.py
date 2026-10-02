@@ -34,14 +34,15 @@ SPEAKER_BAND = (1000.0, 6000.0)
 KEYBOARD_BAND = (2000.0, 7000.0)
 LEVEL_BAND = (100.0, 8000.0)
 SPEAKER_ELEVATIONS = (0.0, 15.0, 30.0, 45.0, 60.0)
-#: Frames des Stoßes: mindestens so weit über dem Grundrauschen (Band 1–6 kHz) und höchstens so weit unter
-#: ihrem Median (nimmt Anlauf und Nachhall nach dem Stoß heraus)
+#: Frames des Stoßes: mindestens so weit über dem Grundrauschen (Band 1–6 kHz) und höchstens so weit unter oder
+#: über ihrem Median (nimmt Anlauf, Nachhall nach dem Stoß und lautere Störungen heraus)
 MIN_SNR_DB = 10.0
 BURST_SPREAD_DB = 6.0
 #: so lange nach dem Ende von pw-play noch zum Stoß zählen (Ausgabelatenz)
 TAIL_S = 0.3
 MIN_FRAMES = 40
-#: Haupt- minus Nebenmaximum (doa.DoaResult.confidence): darunter unbrauchbar bzw. unsicher
+#: Eindeutigkeit: Hauptmaximum minus stärkstes konkurrierendes Maximum (locate, Live-Analyse: doa.DoaResult.confidence):
+#: darunter unbrauchbar bzw. unsicher
 MIN_CONFIDENCE = 0.05
 GOOD_CONFIDENCE = 0.15
 #: Beide Kanäle näher beieinander → ein Lautsprecher (Mono), eine Nullstelle
@@ -175,16 +176,31 @@ def elevation_fit(srp: SrpPhat, cs: np.ndarray, azimuth: float, els: np.ndarray)
     return float(els[np.argmax(explained.sum(axis=1))])
 
 
+def clarity(profile: np.ndarray, azimuths: np.ndarray, exclude_deg: float = 30.0) -> float:
+    """Hauptmaximum des SRP-Profils über dem Azimut minus das stärkste andere lokale Maximum außerhalb ±exclude_deg,
+    ohne ein solches minus das Minimum. Nicht „minus der höchste Wert außerhalb ±30°“ (doa.estimate_cs): Bei 43 mm
+    Radius ist die Hauptkeule so breit, dass das ihre Flanke wäre; ein entfernter, halliger Lautsprecher mit einer
+    einzigen klaren Richtung galt dann als „nicht eindeutig“ (gemessen 0,04 statt 0,25)."""
+    best = int(np.argmax(profile))
+    n = len(profile)
+    local = [i for i in range(n) if profile[i] >= profile[i - 1] and profile[i] >= profile[(i + 1) % n]]
+    rivals = [profile[i] for i in local if angle_diff(azimuths[i], azimuths[best]) > exclude_deg]
+    return float(profile[best] - (max(rivals) if rivals else profile.min()))
+
+
 def locate(srp: SrpPhat, cs: np.ndarray, step: float = 5.0) -> tuple[float, float, float]:
-    """Gittermaximum, dann Azimut (±step, 0,25°, SRP) und Elevation (0–85°, 2,5°, elevation_fit) verfeinert."""
+    """Gittermaximum, dann Azimut (±step, 0,25°, SRP) und Elevation (0–85°, 2,5°, elevation_fit) verfeinert;
+    dazu die Eindeutigkeit (clarity)."""
     coarse = srp.estimate_cs(cs)
     az, el = coarse.azimuth, coarse.elevation
+    n_el = len(set(srp.grid_el.tolist()))
+    conf = clarity(srp.srp(cs).reshape(-1, n_el).max(axis=1), srp.grid_az[::n_el])
     els = np.arange(0.0, 87.5, 2.5)
     for _ in range(2):
         azs = az + np.arange(-step, step + 1e-9, 0.25)
         az = float(azs[np.argmax(srp.srp_at(cs, azs, np.full(azs.shape, el)))] % 360.0)
         el = elevation_fit(srp, cs, az, els)
-    return az, el, coarse.confidence
+    return az, el, conf
 
 
 def quality(confidence: float) -> str:
@@ -232,7 +248,9 @@ def analyse_speakers(block: np.ndarray, bursts: list[tuple[int, int]], noise: tu
         window = (starts >= s) & (starts + NFFT <= e + int(TAIL_S * sr))
         sel = window & (p_band > noise_band * 10 ** (MIN_SNR_DB / 10))
         if sel.any():
-            sel &= p_band >= np.median(p_band[sel]) * 10 ** (-BURST_SPREAD_DB / 10)
+            # nur Frames um den Median: ohne Anlauf und Nachhall, aber auch ohne lautere Störungen (Husten, Klick)
+            med = np.median(p_band[sel])
+            sel &= (p_band >= med * 10 ** (-BURST_SPREAD_DB / 10)) & (p_band <= med * 10 ** (BURST_SPREAD_DB / 10))
         if sel.sum() < MIN_FRAMES:
             results.append(Direction(False, f"Lautsprecher {name}: am Mikrofon nichts zu hören. Lautstärke an? "
                                             "Ist die Standardausgabe dieser Lautsprecher (nicht Kopfhörer, HDMI)?"))

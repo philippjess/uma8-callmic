@@ -9,7 +9,7 @@ from sim import plane_wave
 from test_doa import speech_like
 from uma8_callmic import workspace as ws
 from uma8_callmic.array import UMA8
-from uma8_callmic.doa import angle_diff
+from uma8_callmic.doa import angle_diff, angle_diff_array as angle_diff_deg
 
 P = UMA8.positions()
 
@@ -252,3 +252,26 @@ def test_complete_or_unmatched_measurements_stay_as_measured():
         assert ws.keep_known_speakers(partial, old, [-80.0] * len(old)) is partial
     none = _measured(False, False)
     assert ws.keep_known_speakers(none, [[174.5, 45.0], [8.8, 35.0]], [-79.8, -77.6]) is none
+
+
+def test_clarity_looks_for_rival_peaks_not_the_main_lobe_flank():
+    """Am echten Platz: ein entfernter, halliger Lautsprecher hat eine breite Keule mit einem einzigen Maximum.
+    „Minus höchster Wert außerhalb ±30°“ maß nur deren Flanke (0,04, „nicht eindeutig“)."""
+    az = np.arange(0.0, 360.0, 5.0)
+    lobe = 0.04 + 0.27 * np.cos(np.radians(angle_diff_deg(az, 185.0)) / 2) ** 4   # breit wie gemessen, ein Maximum
+    flank = lobe.max() - lobe[angle_diff_deg(az, 185.0) > 30].max()
+    assert flank < ws.MIN_CONFIDENCE and ws.clarity(lobe, az) > ws.GOOD_CONFIDENCE
+    rival = lobe + 0.25 * np.exp(-0.5 * (angle_diff_deg(az, 20.0) / 15) ** 2)      # zweite Quelle, fast so stark
+    assert ws.clarity(rival, az) < ws.MIN_CONFIDENCE
+    assert ws.clarity(np.full_like(az, 0.1) + 0.01 * np.sin(np.radians(3 * az)), az) < ws.MIN_CONFIDENCE  # diffus
+
+
+def test_loud_disturbance_during_burst_is_ignored():
+    """Husten oder Klick lauter als der Stoß (im Fenster bis 0,3 s danach) zählt nicht als Lautsprecher."""
+    x, bursts, noise = scene([(100.0, 5.0), (260.0, 5.0)])
+    s, e = bursts[1]
+    click = ws.pink_noise(int(0.25 * SR), seed=5) * 10 ** (-30.0 / 20)              # 20 dB über dem Stoß
+    x[e + int(0.12 * SR):e + int(0.37 * SR), :7] += plane_wave(click, P, 170.0, 5.0)
+    m = ws.analyse_speakers(x, bursts, noise, P)
+    assert m.speakers[1].ok and angle_diff(m.speakers[1].azimuth, 260.0) <= 1.0
+    assert abs(m.speakers[1].level_dbfs - m.speakers[0].level_dbfs) < 1.0
