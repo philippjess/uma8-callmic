@@ -3,7 +3,8 @@
 
 Aufnahme (UMA-8 in Raw-Firmware; Kanal 0–6 = Mikrofone, Kanal 7 bleibt unbenutzt):
     pw-record --target alsa_input.usb-miniDSP_micArray_RAW_SPK-00.analog-surround-71 \\
-              --channels 8 --format f32 rec.wav
+              --channels 8 --channel-map FL,FR,FC,LFE,RL,RR,FLC,FRC --format f32 rec.wav
+(ohne --channel-map nimmt pw-record 7.1 an, PipeWire mischt dann FLC/FRC in FL/FR und Kanal 6/7 bleiben stumm)
 Verarbeitung mit den Einstellungen aus ~/.config/uma8-callmic/config.toml, einzelne Werte überschreibbar:
     python3 tools/offline.py rec.wav neu.wav
     python3 tools/offline.py rec.wav ds.wav --beamformer delay_and_sum --dereverb off --late-reverb off
