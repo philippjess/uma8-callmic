@@ -35,7 +35,7 @@ def test_old_dereverb_switch_gives_new_defaults(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("dereverb = false\ndereverb_strength = 0.8\n")
     res = load(path)
-    assert res.config.dereverb is True and res.config.late_reverb is True
+    assert res.config.dereverb is False and res.config.late_reverb is True
     assert res.config.dereverb_strength == Config().dereverb_strength  # Bedeutung geändert → Standard
     assert res.migrated and res.warnings == []
     path.write_text("dereverb = false\nlate_reverb = false\ndereverb_strength = 0.8\n")

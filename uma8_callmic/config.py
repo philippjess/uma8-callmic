@@ -26,10 +26,11 @@ class Config:
     calibrated_elevation: float = 20.0
     manual_azimuth: float = 0.0
     beamformer: str = "superdirective"
-    #: Kohärenzbasierte Hallunterdrückung
-    dereverb: bool = True
+    #: Kohärenzfilter als zusätzliche Hallunterdrückung. Aus: Im echten Raum brachte er nach dem Abklingmodell nur
+    #: 1–3 dB weniger Schwanz, kostete ≈ 1 dB Sprachpegel und klang im Hörvergleich etwas schlechter.
+    dereverb: bool = False
     dereverb_strength: float = 0.6
-    #: Zusätzlich späten Nachhall über das Abklingmodell dämpfen (nutzt dereverb_t60)
+    #: Hallunterdrückung über das Abklingmodell des späten Nachhalls (nutzt dereverb_t60)
     late_reverb: bool = True
     dereverb_t60: float = 0.5
     noise_reduction_db: float = 30.0

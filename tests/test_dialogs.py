@@ -35,7 +35,10 @@ def test_options_dialog_reports_changes(app):
 def test_options_dialog_dereverb_controls(app):
     changes = []
     dlg = OptionsDialog(Config(), changes.append, lambda: None, meter=False)
+    assert dlg.late.isChecked() and not dlg.dereverb.isChecked()  # Standard: nur das Abklingmodell
     assert dlg.t60.isEnabled() and dlg.strength.isEnabled() and dlg.beamformer.isEnabled()
+    dlg.dereverb.setChecked(True)
+    assert changes[-1]["dereverb"] is True
     dlg.late.setChecked(False)
     assert changes[-1]["late_reverb"] is False and not dlg.t60.isEnabled() and dlg.strength.isEnabled()
     dlg.dereverb.setChecked(False)

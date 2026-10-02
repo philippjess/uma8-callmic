@@ -284,8 +284,16 @@ hallig); „Gain“ gleicht den Pegel aus. Gewählte Standards und Gründe:
   insgesamt) bei 11–12 dB weniger Schwanz; 0,6 ist die vorsichtige Mitte, weil
   Musical Noise in diesen Maßen nicht sichtbar ist. Mehr Wirkung: Regler
   „Stärke“.
-- Hallunterdrückung und später Nachhall standardmäßig an: zusammen 9–9,5 dB
-  weniger Schwanz als die bisherige Kette und +4,3–4,7 dB SI-SDR.
+- Simulation: Kohärenzfilter und später Nachhall zusammen 9–9,5 dB weniger
+  Schwanz als die bisherige Kette und +4,3–4,7 dB SI-SDR.
+- Echter Raum (2026-10-02, 34 s Sprache am Platz, offline, Hörvergleich):
+  Der Kohärenzfilter brachte nach dem Abklingmodell nur 1–3 dB weniger
+  Schwanz (in der Simulation die Hauptwirkung), kostete ≈ 1 dB Sprachpegel,
+  machte die Pausen fleckiger (Streuung der Pegel je Bin 11,5 statt 9,7 dB)
+  und klang mit und ohne DeepFilterNet etwas schlechter. Standard daher: nur
+  das Abklingmodell (Einsatz 25 ms, bis −25·s dB), Kohärenzfilter optional.
+  Schwanz 150–300 ms nach Wortende: Mittel-Mikrofon −16 dB, bisherige Kette
+  −17 dB, neu −24 dB (mit DeepFilterNet −21 bzw. −25 dB).
 
 `tools/offline.py` verarbeitet eine echte 8-Kanal-Aufnahme
 (`pw-record --target <Raw-Quelle> --channels 8 --channel-map FL,FR,FC,LFE,RL,RR,SL,SR --format f32 rec.wav`) mit den
@@ -583,8 +591,9 @@ Optionen:
   Automatisch nachführen · Alle Richtungen
 - Beamformer: superdirektiv (Standard) oder Delay-and-Sum zum Vergleich
   (bei „Alle Richtungen“ ohne Wirkung)
-- Hallunterdrückung (Standard an), späten Nachhall zusätzlich dämpfen
-  (Standard an, mit Nachhallzeit des Raums), Stärke für beide
+- Hallunterdrückung = Abklingmodell des späten Nachhalls (Standard an, mit
+  Nachhallzeit des Raums); zusätzlich Kohärenzfilter (Standard aus); Stärke
+  für beide
 - Rauschunterdrückung: 0–100 dB, Standard 30 dB
 - Verstärkung: dB-Regler mit Pegelanzeige
 - Echounterdrückung (Lautsprecher), Standard an; Umschalten startet die Kette

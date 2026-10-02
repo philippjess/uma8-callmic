@@ -38,11 +38,11 @@ def test_beamformer_choice_sets_mode():
 
 
 def test_dereverb_params():
-    p = processing_params(Config())
-    assert p["beam:Dereverb"] == 1.0 and p["beam:Late Reverb"] == 1.0
+    p = processing_params(Config())  # Standard: Abklingmodell an, Kohärenzfilter aus (Hörvergleich im Raum)
+    assert p["beam:Dereverb"] == 0.0 and p["beam:Late Reverb"] == 1.0
     assert p["beam:Min WNG (dB)"] == MIN_WNG_DB == -3.0
-    p = processing_params(Config(dereverb=False, late_reverb=False, dereverb_t60=0.8))
-    assert p["beam:Dereverb"] == 0.0 and p["beam:Late Reverb"] == 0.0 and p["beam:Dereverb T60 (s)"] == 0.8
+    p = processing_params(Config(dereverb=True, late_reverb=False, dereverb_t60=0.8))
+    assert p["beam:Dereverb"] == 1.0 and p["beam:Late Reverb"] == 0.0 and p["beam:Dereverb T60 (s)"] == 0.8
 
 
 def test_mix_params():
@@ -65,7 +65,7 @@ BEFORE_PROFILE = {
     'beam:Center Channel': 0.0, 'beam:Ring 0': 1.0, 'beam:Ring 1': 6.0, 'beam:Ring 2': 5.0, 'beam:Ring 3': 4.0,
     'beam:Ring 4': 3.0, 'beam:Ring 5': 2.0, 'beam:Ring Offset (deg)': 90.0, 'beam:Radius (mm)': 43.0,
     'beam:Raw Extra Delay (samples)': 960.0, 'beam:Mode': 0.0, 'beam:Azimuth (deg)': 0.0, 'beam:Elevation (deg)': 20.0,
-    'beam:Gain (dB)': 12.0, 'beam:Dereverb': 1.0, 'beam:Dereverb Strength': 0.6, 'beam:Dereverb T60 (s)': 0.5,
+    'beam:Gain (dB)': 12.0, 'beam:Dereverb': 0.0, 'beam:Dereverb Strength': 0.6, 'beam:Dereverb T60 (s)': 0.5,
     'beam:Late Reverb': 1.0, 'beam:Min WNG (dB)': -3.0, 'dfn:Attenuation Limit (dB)': 30.0, 'limit:Ceiling (dB)': -1.0,
     'mix:Gain 1': 1.0, 'mix:Gain 2': 0.0,
 }

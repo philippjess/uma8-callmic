@@ -74,7 +74,7 @@ impl Plugin for BeamPlugin {
         PortSpec::control("Ring Offset (deg)", 0.0, 360.0, HINT_DEFAULT_0),
         PortSpec::control("Radius (mm)", 20.0, 60.0, HINT_DEFAULT_MIDDLE),
         PortSpec::control("Gain (dB)", GAIN_LO, GAIN_HI, HINT_DEFAULT_0),
-        PortSpec::control("Dereverb", 0.0, 1.0, HINT_TOGGLED | HINT_DEFAULT_1),
+        PortSpec::control("Dereverb", 0.0, 1.0, HINT_TOGGLED | HINT_DEFAULT_0),
         PortSpec::control("Dereverb Strength", 0.0, 1.0, HINT_DEFAULT_MIDDLE),
         PortSpec::control("Dereverb T60 (s)", 0.1, 1.5, HINT_DEFAULT_MIDDLE),
         PortSpec::control("Raw Extra Delay (samples)", 0.0, 4800.0, HINT_INTEGER | HINT_DEFAULT_0),
