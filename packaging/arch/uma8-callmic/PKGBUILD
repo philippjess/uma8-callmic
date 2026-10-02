@@ -8,7 +8,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc='Call-Mikrofon für das miniDSP UMA-8 unter PipeWire: Beamforming, Hallunterdrückung, DeepFilterNet, Tray'
 arch=(x86_64 aarch64)
-url='https://git.rootshell.dev'
+url='https://github.com/willheisenberg/uma8-callmic'
 # Das Projekt hat noch keine Lizenz festgelegt (Platzhalter); statisch gelinktes realfft-Crate und Abhängigkeiten: MIT bzw. MIT OR Apache-2.0
 license=('LicenseRef-Unknown')
 depends=(
