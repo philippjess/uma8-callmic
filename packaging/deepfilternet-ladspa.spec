@@ -6,7 +6,7 @@
 
 Name:           deepfilternet-ladspa
 Version:        0.5.6
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        DeepFilterNet-Rauschunterdrückung als LADSPA-Plugin
 
 # DeepFilterNet (Code und mitgelieferte Modelle): MIT OR Apache-2.0. Dazu die statisch gelinkten Crates,
@@ -21,6 +21,8 @@ Source1:        DeepFilterNet-%{version}-vendor.tar.xz
 Patch0:         deepfilternet-0.5.6-time-0.3.36.patch
 # Jede Instanz startete einen nie endenden, alle 2 ms pollenden Worker-Thread; jetzt Stop-Flag + join
 Patch1:         deepfilternet-0.5.6-ladspa-worker-thread.patch
+# Latenzabbau nach Underruns nahm nur 1 Sample statt 10 ms zurück (Latenz wuchs über Tage auf Sekunden)
+Patch2:         deepfilternet-0.5.6-ladspa-latency.patch
 
 ExclusiveArch:  %{rust_arches}
 # jemalloc-sys 0.5.4 baut jemalloc 5.3.0 aus mitgelieferten Quellen
@@ -38,7 +40,10 @@ den Labels deep_filter_mono und deep_filter_stereo, z. B. für
 PipeWire-Filterketten. Das Low-Latency-Modell DeepFilterNet3 ist eingebaut.
 
 Gegenüber Upstream 0.5.6 beendet jede Plugin-Instanz beim Aufräumen ihren
-Worker-Thread, statt ihn weiterlaufen zu lassen.
+Worker-Thread, statt ihn weiterlaufen zu lassen. Die nach Aussetzern
+(Underruns) zusätzlich gepufferte Latenz wird wieder vollständig abgebaut,
+statt sich mit der Laufzeit aufzusummieren, und ist auf 1 s begrenzt, statt den
+Host-Prozess per panic zu beenden.
 
 %prep
 %autosetup -n DeepFilterNet-%{version} -p1
@@ -67,7 +72,8 @@ install -Dpm0755 target/rpm/libdeep_filter_ladspa.so %{buildroot}%{_libdir}/lads
 %{__strip} --strip-unneeded %{buildroot}%{_libdir}/ladspa/libdeep_filter_ladspa.so
 
 %check
-# u. a. Patch1: Instanzen anlegen und aufräumen darf keine Threads zurücklassen
+# u. a. Patch1: Instanzen anlegen und aufräumen darf keine Threads zurücklassen;
+# Patch2: Latenz folgt Underruns und Abbau, Obergrenze ohne panic
 %cargo_test -- -p deep-filter-ladspa
 
 %files
@@ -77,6 +83,13 @@ install -Dpm0755 target/rpm/libdeep_filter_ladspa.so %{buildroot}%{_libdir}/lads
 %{_libdir}/ladspa/libdeep_filter_ladspa.so
 
 %changelog
+* Thu Oct 08 2026 Philipp <philipp@rootshell.dev> - 0.5.6-2
+- Latenzabbau nach Underruns verwirft einen ganzen Frame statt nur eines Samples
+  (die Latenz wuchs mit jedem Underrun um 10 ms dauerhaft)
+- Mindestens der anfängliche Ein-Frame-Puffer bleibt; Latenz auf 1 s begrenzt statt panic
+- Abbau nach 10 s ohne Underrun, danach 1 s pro Schritt statt 10 s
+- Latenzänderungen als Warnung im Log (Journal)
+
 * Thu Oct 01 2026 Philipp <philipp@rootshell.dev> - 0.5.6-1
 - Erstes Paket: LADSPA-Plugin aus DeepFilterNet 0.5.6, offline aus vendorten Crates
 - Lockfile: time 0.3.36, damit es mit aktuellem Rust baut

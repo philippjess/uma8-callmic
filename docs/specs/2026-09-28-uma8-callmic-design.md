@@ -343,8 +343,9 @@ Pegelregelung, damit die AEC der Anruf-Programme nicht gestört wird.
   Latenz des Roh-Wegs gleicht `uma8_beam` über „Raw Extra Delay“ an.
 - DeepFilterNet: `libdeep_filter_ladspa.so`, Label `deep_filter_mono`,
   bevorzugt aus dem Paket `deepfilternet-ladspa` dieses Repos (RPM bzw.
-  PKGBUILD: 0.5.6 mit behobenem Thread-Leck). Das AUR-Paket
-  `deepfilternet-plugin-pipewire-bin` geht auch, behält aber das Leck.
+  PKGBUILD: 0.5.6 mit behobenem Thread-Leck und Latenzabbau nach
+  Underruns). Das AUR-Paket `deepfilternet-plugin-pipewire-bin` geht auch,
+  behält aber beide Fehler.
   Control „Attenuation Limit (dB)“ (0–100) = Optionswert
   „Rauschunterdrückung“. Die vom AUR-Paket mitgelieferte Beispielkette
   (`/etc/pipewire/filter-chain.conf.d/deepfilter-mono-source.conf`,

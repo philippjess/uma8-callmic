@@ -25,7 +25,8 @@ Das ergibt zwei Pakete:
 
 - `uma8-callmic`: Tray-Programm (`/usr/bin/uma8-callmic`), Plugin `libuma8_beam.so` in `/usr/lib64/ladspa`,
   Benutzerdienst `uma8-callmic-chain.service`, Startmenü-Eintrag
-- `deepfilternet-ladspa`: DeepFilterNet 0.5.6 als LADSPA-Plugin, mit behobenem Thread-Leck
+- `deepfilternet-ladspa`: DeepFilterNet 0.5.6 als LADSPA-Plugin, mit behobenem Thread-Leck und Latenzabbau
+  (siehe [Latenz](#latenz))
 
 Danach „UMA-8 Call Mic“ aus dem Startmenü starten. Beim ersten Start aktiviert das Tray den Dienst und den
 Autostart für den eigenen Benutzer, nur dieses eine Mal: Ein später per `systemctl --user disable` abgeschalteter
@@ -38,7 +39,7 @@ Rust-Crates herunter, `rpmbuild` selbst läuft danach offline. Ergebnisse, Logs 
 
 ## Installation (Arch Linux, Paket)
 
-Zwei Pakete, gebaut aus dem Checkout: `deepfilternet-ladspa` (DeepFilterNet 0.5.6 mit dem Thread-Leck-Patch) und `uma8-callmic`.
+Zwei Pakete, gebaut aus dem Checkout: `deepfilternet-ladspa` (DeepFilterNet 0.5.6 mit den Patches gegen Thread-Leck und wachsende Latenz) und `uma8-callmic`.
 Vorher `./uninstall.sh`, falls `install.sh` benutzt wurde (Einstellungen behalten): Plugin und Dienst der
 Entwickler-Installation gingen sonst denen des Pakets vor.
 
@@ -50,7 +51,7 @@ Direkt auf dem Arch-Rechner geht es auch, im jeweiligen Verzeichnis (zuerst das 
     cd packaging/arch/deepfilternet-ladspa && makepkg -si
     cd ../uma8-callmic && makepkg -si
 
-`deepfilternet-ladspa` ersetzt das AUR-Paket `deepfilternet-plugin-pipewire-bin` (provides/conflicts/replaces): pacman tauscht es beim Installieren aus. Das AUR-Paket liefert zwar `libdeep_filter_ladspa` und erfüllt damit die Abhängigkeit von `uma8-callmic`, behält aber das Thread-Leck. Abhängigkeiten kommen aus den offiziellen Repos: `pipewire`, `pipewire-audio` (pw-record, WebRTC-AEC), `libpipewire` (echo-cancel), `libpulse` (pactl), `pyside6`, `python-numpy`.
+`deepfilternet-ladspa` ersetzt das AUR-Paket `deepfilternet-plugin-pipewire-bin` (provides/conflicts/replaces): pacman tauscht es beim Installieren aus. Das AUR-Paket liefert zwar `libdeep_filter_ladspa` und erfüllt damit die Abhängigkeit von `uma8-callmic`, behält aber Thread-Leck und wachsende Latenz. Abhängigkeiten kommen aus den offiziellen Repos: `pipewire`, `pipewire-audio` (pw-record, WebRTC-AEC), `libpipewire` (echo-cancel), `libpulse` (pactl), `pyside6`, `python-numpy`.
 
 Erster Start: Das Paket aktiviert nichts von selbst. Beim ersten Start des Tray-Programms (`uma8-callmic` oder Startmenü-Eintrag) richtet es Benutzerdienst und Autostart ein, nur dieses eine Mal (wie oben bei Fedora). Der Dienst `uma8-callmic-chain.service` ist ein systemd-Benutzerdienst (`systemctl --user status uma8-callmic-chain`); er schreibt vor dem Start die PipeWire-Konfiguration neu (`uma8-callmic --write-config`).
 
@@ -63,7 +64,7 @@ Läuft direkt aus dem Repo, nur für den eigenen Benutzer, und verweigert sich, 
   `./packaging/build-rpms.sh deepfilternet-ladspa` und `sudo dnf install packaging/out/deepfilternet-ladspa-*.x86_64.rpm`
 - Arch: `sudo pacman -S rust pyside6 python-numpy`, dazu das Paket `deepfilternet-ladspa` von oben
   (`./packaging/build-arch.sh deepfilternet-ladspa` und `sudo pacman -U packaging/out/arch/deepfilternet-ladspa-*.pkg.tar.zst`).
-  Alternative: `yay -S deepfilternet-plugin-pipewire-bin`, behält aber das Thread-Leck.
+  Alternative: `yay -S deepfilternet-plugin-pipewire-bin`, behält aber Thread-Leck und wachsende Latenz.
 
 ```sh
 ./install.sh
@@ -167,6 +168,18 @@ Ohne Echounterdrückung liest `uma8_beam` das UMA-8 direkt und verstärkt allein
 Die Tonverarbeitung läuft als PipeWire-Filterkette im Dienst `uma8-callmic-chain` (Rust-LADSPA-Plugin in
 `plugin/`). Vor jedem Start schreibt der Dienst die Kettenkonfiguration aus den Einstellungen
 (`uma8-callmic --write-config`). Das Tray-Programm (`uma8_callmic/`) steuert nur und ist nie im Tonweg.
+
+## Latenz
+
+Soll: Echounterdrückung (nur wenn an) + Beamforming 21,3 ms + DeepFilterNet 20 ms + Begrenzer 5 ms
+(`uma8_callmic/constants.py`). DeepFilterNet puffert nach jedem Aussetzer (Underrun, etwa unter CPU-Last) 10 ms
+mehr und baut das nach 10 s ohne Aussetzer wieder ab, danach 10 ms je Sekunde; höchstens 1 s. Upstream 0.5.6 baute
+nie wirklich ab, die Latenz wuchs über Tage auf Sekunden (behoben ab `deepfilternet-ladspa` 0.5.6-2,
+`packaging/deepfilternet-0.5.6-ladspa-latency.patch`). Jede Änderung steht im Journal:
+
+```sh
+journalctl --user -u uma8-callmic-chain | grep -i latency
+```
 
 ## Tests
 

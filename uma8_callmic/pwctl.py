@@ -241,7 +241,8 @@ class Status:
     def problem(self) -> str | None:
         if not self.dfn:
             return ("DeepFilterNet nicht installiert: Paket deepfilternet-ladspa aus diesem Repo (packaging/, siehe "
-                    "README); Arch alternativ AUR deepfilternet-plugin-pipewire-bin (mit Thread-Leck)")
+                    "README); Arch alternativ AUR deepfilternet-plugin-pipewire-bin (mit Thread-Leck und "
+                    "wachsender Latenz)")
         if not self.beam:
             return "Plugin libuma8_beam.so fehlt (Paket uma8-callmic oder ./install.sh)"
         if self.beam_api:
