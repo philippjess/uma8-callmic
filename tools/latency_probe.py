@@ -3,7 +3,7 @@
 
     python3 tools/latency_probe.py                        # 60 s, alle 10 s ein Wert je Stufe
     python3 tools/latency_probe.py --seconds 600 --window 20
-    python3 tools/latency_probe.py --expect-max-ms 80     # als Prüfung: Exit 1, wenn der Median darüber liegt
+    python3 tools/latency_probe.py --expect-max-ms 90     # als Prüfung: Exit 1, wenn der Median darüber liegt
 
 Ein einziger pw-record-Stream (node.autoconnect = false) nimmt Mikrofon 0 der Raw-Quelle, AUX0 von
 Vorverstärkung und Echounterdrückung (nur wenn eingeschaltet) und den Ausgang „UMA-8 Call Mic“ auf, verbunden

@@ -6,7 +6,7 @@
 
 Name:           deepfilternet-ladspa
 Version:        0.5.6
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        DeepFilterNet-Rauschunterdrückung als LADSPA-Plugin
 
 # DeepFilterNet (Code und mitgelieferte Modelle): MIT OR Apache-2.0. Dazu die statisch gelinkten Crates,
@@ -43,7 +43,9 @@ Gegenüber Upstream 0.5.6 beendet jede Plugin-Instanz beim Aufräumen ihren
 Worker-Thread, statt ihn weiterlaufen zu lassen. Die nach Aussetzern
 (Underruns) zusätzlich gepufferte Latenz wird wieder vollständig abgebaut,
 statt sich mit der Laufzeit aufzusummieren, und ist auf 1 s begrenzt, statt den
-Host-Prozess per panic zu beenden.
+Host-Prozess per panic zu beenden. Der Regler "Min Processing Buffer (frames)"
+ist von der ersten Verarbeitung an eine Untergrenze des Puffers (je Frame 10 ms
+mehr Latenz), nicht erst nach dem ersten Underrun.
 
 %prep
 %autosetup -n DeepFilterNet-%{version} -p1
@@ -73,7 +75,7 @@ install -Dpm0755 target/rpm/libdeep_filter_ladspa.so %{buildroot}%{_libdir}/lads
 
 %check
 # u. a. Patch1: Instanzen anlegen und aufräumen darf keine Threads zurücklassen;
-# Patch2: Latenz folgt Underruns und Abbau, Obergrenze ohne panic
+# Patch2: Latenz folgt Underruns und Abbau, Obergrenze ohne panic, Mindestpuffer ab dem ersten run()
 %cargo_test -- -p deep-filter-ladspa
 
 %files
@@ -83,6 +85,11 @@ install -Dpm0755 target/rpm/libdeep_filter_ladspa.so %{buildroot}%{_libdir}/lads
 %{_libdir}/ladspa/libdeep_filter_ladspa.so
 
 %changelog
+* Thu Oct 08 2026 Philipp <philipp@rootshell.dev> - 0.5.6-4
+- "Min Processing Buffer (frames)" ist ab dem ersten run() eine Untergrenze: der Puffer
+  wächst vor der ersten Ausgabe darauf, statt bei einem Frame zu starten und erst nach
+  einem Underrun nachzuziehen (mit einem Frame pendelte die Latenz 10↔20 ms mit Aussetzern)
+
 * Thu Oct 08 2026 Philipp <philipp@rootshell.dev> - 0.5.6-3
 - Halte- und Schrittzeit des Latenzabbaus in Samples statt run()-Aufrufen
   (ergab nur bei einem Quantum von 480 Sekunden; PipeWire-Standard ist 1024)

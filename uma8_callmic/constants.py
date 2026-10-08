@@ -101,7 +101,16 @@ def dfn_plugin() -> Path:
 
 #: Latenz von uma8_beam „Beam Out“: FFT-Länge der STFT (fest in allen Modi)
 BEAM_LATENCY = 1024
-#: Latenz von deep_filter_mono (20 ms), gemessen mit tests/test_dfn_latency.py
-DFN_LATENCY = 960
+#: Frame von DeepFilterNet3 (10 ms): Einheit von Verarbeitung und Ausgabepuffer des Plugins
+DFN_FRAME = 480
+#: „Min Processing Buffer (frames)“ von deep_filter_mono: Puffer von 1 + 1 Frames statt einem. Der Worker-Thread
+#: des Plugins läuft mit normaler Priorität und liefert auf einem ausgelasteten Desktop manchmal mehr als 10 ms zu
+#: spät; mit einem Frame pendelte die Latenz 10↔20 ms, und jeder Rückbau endete nach Sekundenbruchteilen in einem
+#: Underrun (10 ms Stille im Anrufmikrofon, PipeWires RT-Thread blockiert). Ab deepfilternet-ladspa 0.5.6-4 gilt
+#: der Wert von Anfang an, nicht erst nach dem ersten Underrun.
+DFN_MIN_BUFFER_FRAMES = 1
+#: Latenz von deep_filter_mono (30 ms): 20 ms mit einem Frame Puffer, gemessen mit tests/test_dfn_latency.py,
+#: plus der Mindestpuffer
+DFN_LATENCY = 960 + DFN_MIN_BUFFER_FRAMES * DFN_FRAME
 #: Latenz von uma8_limit: 5 ms Vorschau (plugin/src/limiter.rs), geprüft in tests/test_limit_plugin.py
 LIMIT_LATENCY = 240

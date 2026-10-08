@@ -171,10 +171,15 @@ Die Tonverarbeitung läuft als PipeWire-Filterkette im Dienst `uma8-callmic-chai
 
 ## Latenz
 
-Soll: Echounterdrückung (nur wenn an) + Beamforming 21,3 ms + DeepFilterNet 20 ms + Begrenzer 5 ms
-(`uma8_callmic/constants.py`). DeepFilterNet puffert nach jedem Aussetzer (Underrun, etwa unter CPU-Last) 10 ms
-mehr und baut das nach 10 s ohne Aussetzer wieder ab, danach 10 ms je Sekunde; höchstens 1 s. Upstream 0.5.6 baute
-nie wirklich ab, die Latenz wuchs über Tage auf Sekunden (behoben ab `deepfilternet-ladspa` 0.5.6-2,
+Soll: Echounterdrückung (nur wenn an) + Beamforming 21,3 ms + DeepFilterNet 30 ms + Begrenzer 5 ms
+(`uma8_callmic/constants.py`), mit Echounterdrückung insgesamt etwa 86 ms. DeepFilterNet hat 20 ms mit einem Frame
+Ausgabepuffer; die Kette setzt „Min Processing Buffer (frames)“ auf 1, also 10 ms mehr Puffer. Der Worker-Thread
+des Plugins liefert auf einem ausgelasteten Desktop manchmal mehr als 10 ms zu spät, mit nur einem Frame pendelte
+die Latenz dann alle 10 s zwischen 10 und 20 ms Puffer, mit einem Aussetzer bei jedem Rückbau. Über den
+Mindestpuffer hinaus puffert DeepFilterNet nach jedem Aussetzer (Underrun, etwa unter CPU-Last) 10 ms mehr und
+baut das nach 10 s ohne Aussetzer wieder ab, danach 10 ms je Sekunde; höchstens 1 s. Upstream 0.5.6 baute nie
+wirklich ab, die Latenz wuchs über Tage auf Sekunden (behoben ab `deepfilternet-ladspa` 0.5.6-2), und der
+Mindestpuffer galt erst nach dem ersten Underrun (ab 0.5.6-4 von Anfang an; beides
 `packaging/deepfilternet-0.5.6-ladspa-latency.patch`). Jede Änderung steht im Journal:
 
 ```sh
@@ -185,7 +190,7 @@ Messen gegen das Roh-Array, gesamt und je Stufe (Vorverstärkung, Echounterdrüc
 
 ```sh
 python3 tools/latency_probe.py                    # 60 s, alle 10 s ein Wert je Stufe; dabei sprechen
-python3 tools/latency_probe.py --expect-max-ms 80 # als Prüfung: Exit 1, wenn der Median darüber liegt
+python3 tools/latency_probe.py --expect-max-ms 90 # als Prüfung: Exit 1, wenn der Median darüber liegt
 ```
 
 Ein pw-record-Stream nimmt alle Stufen im selben Graphzyklus auf, der Versatz zwischen den Spalten ist also die
@@ -200,7 +205,7 @@ python -m pytest                                  # Unit-Tests
 cargo test --manifest-path plugin/Cargo.toml      # Rust-Tests
 python -m pytest -m integration                   # nach der Installation, braucht PipeWire
 python3 tools/check_output.py                     # mit angeschlossenem UMA-8
-python3 tools/latency_probe.py --expect-max-ms 80 # mit laufender Kette, dabei sprechen (siehe Latenz)
+python3 tools/latency_probe.py --expect-max-ms 90 # mit laufender Kette, dabei sprechen (siehe Latenz)
 ```
 
 Die RPM- und Arch-Bauten führen die Unit- und Rust-Tests beider Pakete ebenfalls aus (`%check`, `check()`), ohne

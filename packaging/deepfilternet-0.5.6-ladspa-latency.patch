@@ -25,12 +25,25 @@ day or two of occasional underruns).
   many minutes to drain.
 - Log latency changes at warn level (visible with the default log filter), so
   the log is a time series of the plugin's latency.
+- Make 'Min Processing Buffer (frames)' a floor from the start. It only limited
+  the reduction, while the buffer always started at one frame, so a host asking
+  for two frames got one until the first underrun. run() now grows the buffer
+  with zeros to one frame plus the control's value (at most up to the cap)
+  before it takes its output; the first run() is the first time the control
+  value is known. That is not an underrun and logged once, not per cycle.
+  With the worker thread at normal priority on a loaded desktop a frame
+  sometimes arrives more than 10 ms late: with a one-frame buffer the latency
+  then oscillates between 10 and 20 ms, with an underrun (10 ms of zeros and a
+  stalled host RT thread) shortly after every reduction. A value of 1 keeps
+  20 ms throughout.
 
-The new unit tests drive run() with the worker thread stopped, using half-frame
-host blocks, and check that the queued samples follow proc_delay through
-underruns and recovery, with hold and step times in samples, and that the cap
-holds without a panic. The thread-count test ignores the test harness threads,
-and all tests run one at a time (shared model, thread counting).
+The new unit tests drive run() with the worker thread stopped and check that
+the queued samples follow proc_delay through underruns and recovery, with hold
+and step times in samples (half-frame host blocks), that the cap holds without
+a panic, and that 'Min Processing Buffer' = 1 gives two frames from the first
+run() on (with 1.5-frame host blocks, without waiting for the worker) and again
+after an underrun, never one. The thread-count test ignores the test harness
+threads, and all tests run one at a time (shared model, thread counting).
 
 --- a/ladspa/src/lib.rs
 +++ b/ladspa/src/lib.rs
@@ -44,7 +57,15 @@ and all tests run one at a time (shared model, thread counting).
      sleep_duration: Duration,
      control_hist: DfControlHistory,
      stop: Arc<AtomicBool>,      // Tells the worker thread to exit (set on drop)
-@@ -251,6 +252,7 @@
+@@ -216,6 +217,7 @@
+         let frame_size = hop;
+         let proc_delay = hop;
+         // Add a buffer of 1 frame to compensate processing delays causing underruns
++        // (grown to 'Min Processing Buffer' in the first run(), when the control values are known)
+         for o_ch in o_rx.lock().unwrap().iter_mut() {
+             for _ in 0..proc_delay {
+                 o_ch.push_back(0f32)
+@@ -251,6 +253,7 @@
              frame_size,
              proc_delay,
              t_proc_change: 0,
@@ -52,12 +73,48 @@ and all tests run one at a time (shared model, thread counting).
              sleep_duration,
              control_hist: hist,
              stop,
-@@ -440,58 +442,77 @@
-         let td = t0.elapsed();
-         let t_audio = sample_count as f32 / self.sr as f32;
-         let rtf = td.as_secs_f32() / t_audio;
+@@ -339,6 +342,14 @@
+     }
+ }
+ 
++impl DfPlugin {
++    /// Least latency: the one-frame buffer plus 'Min Processing Buffer' frames, at most `max_delay`
++    fn min_delay(&self, max_delay: usize) -> usize {
++        let frames = 1 + self.control_hist.min_buffer_frames as usize;
++        (frames * self.frame_size).min(max_delay / self.frame_size * self.frame_size)
++    }
++}
++
+ impl Plugin for DfPlugin {
+     fn activate(&mut self) {
+         log::info!("DF {} | activate", self.id);
+@@ -413,6 +424,23 @@
+             }
+         }
+ 
 +        // Upper bound for the added latency (1 s, the former panic threshold)
 +        let max_delay = self.sr;
++        // 'Min Processing Buffer' is a floor from the start: grow the buffer before the outputs
++        // are popped (the first run() is the first time the control is known). Not an underrun.
++        let min_delay = self.min_delay(max_delay);
++        if self.proc_delay < min_delay {
++            for o_ch in self.o_rx.lock().unwrap().iter_mut() {
++                o_ch.resize(o_ch.len() + min_delay - self.proc_delay, 0f32);
++            }
++            self.proc_delay = min_delay;
++            log::warn!(
++                "DF {} | Increasing processing latency to {:.1}ms (Min Processing Buffer)",
++                self.id,
++                self.proc_delay as f32 * 1000. / self.sr as f32
++            );
++        }
++
+         {
+             let i_q = &mut self.i_tx.lock().unwrap();
+             for (i_ch, i_q_ch) in inputs.iter().zip(i_q.iter_mut()) {
+@@ -441,57 +469,74 @@
+         let t_audio = sample_count as f32 / self.sr as f32;
+         let rtf = td.as_secs_f32() / t_audio;
          if rtf >= 1. {
 -            log::warn!(
 -                "DF {} | Underrun detected (RTF: {:.2}). Processing too slow!",
@@ -97,12 +154,12 @@ and all tests run one at a time (shared model, thread counting).
 +                        "DF {} | Processing latency reached its maximum, not increasing it further. Processing too slow! Try to decrease 'Max DF processing threshold (dB)'. Further underruns are counted and reported when the latency decreases.",
 +                        self.id,
 +                    );
-                 }
++                }
 +                for o_ch in self.o_rx.lock().unwrap().iter_mut() {
 +                    for _ in 0..self.frame_size {
 +                        o_ch.push_back(0f32)
 +                    }
-+                }
+                 }
 +            } else {
 +                // No log line per cycle from the audio thread while stuck at the cap
 +                self.capped_underruns += 1;
@@ -111,12 +168,13 @@ and all tests run one at a time (shared model, thread counting).
 +            self.t_proc_change = 0;
 +        } else if self.t_proc_change > 10 * self.sr
              && rtf < 0.5
-             && self.proc_delay
+-            && self.proc_delay
 -                >= self.frame_size * (1 + self.control_hist.min_buffer_frames as usize)
-+                > self.frame_size * (1 + self.control_hist.min_buffer_frames as usize)
++            && self.proc_delay > min_delay
          {
 -            // Reduce delay again
-+            // Reduce delay again by one frame, keeping at least the initial one-frame buffer
++            // Reduce delay again by one frame, keeping at least the one-frame buffer plus
++            // 'Min Processing Buffer'
              let dropped_samples = {
                  let o_q = &mut self.o_rx.lock().unwrap();
                  if o_q[0].len() < self.frame_size {
@@ -157,16 +215,16 @@ and all tests run one at a time (shared model, thread counting).
      }
  }
  
-@@ -749,9 +770,26 @@
+@@ -749,9 +794,26 @@
  #[cfg(test)]
  mod tests {
      use super::*;
 +    use ladspa::PortData;
 +    use std::cell::RefCell;
-+
+ 
 +    // The tests count threads and share the global model: run them one at a time
 +    static SERIAL: Mutex<()> = Mutex::new(());
- 
++
 +    fn serial() -> std::sync::MutexGuard<'static, ()> {
 +        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 +    }
@@ -185,7 +243,7 @@ and all tests run one at a time (shared model, thread counting).
      }
  
      /// Thread count once it reaches `want`; a joined thread may stay listed for a moment.
-@@ -768,6 +806,7 @@
+@@ -768,6 +830,7 @@
  
      #[test]
      fn cleanup_stops_worker_threads() {
@@ -193,7 +251,7 @@ and all tests run one at a time (shared model, thread counting).
          for (index, channels) in [(0, 1), (1, 2)] {
              let desc = get_ladspa_descriptor(index).unwrap();
              // Warm-up: the first instance loads the model; one-off threads stay out of the baseline.
-@@ -782,4 +821,122 @@
+@@ -782,4 +845,181 @@
              assert_eq!(settled_thread_count(base), base, "{channels} ch: worker threads leaked");
          }
      }
@@ -215,12 +273,21 @@ and all tests run one at a time (shared model, thread counting).
 +    /// One host cycle of `n` samples through run(), then a worker that keeps up (all input moved
 +    /// to the output queue).
 +    fn cycle(desc: &PluginDescriptor, p: &mut DfPlugin, n: usize) {
++        let min_buffer = p.control_hist.min_buffer_frames;
++        cycle_with(desc, p, n, min_buffer)
++    }
++
++    /// `cycle` with the control 'Min Processing Buffer (frames)' set to `min_buffer`
++    fn cycle_with(desc: &PluginDescriptor, p: &mut DfPlugin, n: usize, min_buffer: f32) {
 +        let input = vec![0f32; n];
 +        let mut output = vec![0f32; n];
-+        // Same values as the control history, so nothing is sent to the stopped worker
++        // The other controls as in the control history, so nothing is sent to the stopped worker
 +        let controls: Vec<f32> = desc.ports[2..]
 +            .iter()
-+            .map(|port| p.control_hist.get(&DfControl::from_port_name(port.name)))
++            .map(|port| match DfControl::from_port_name(port.name) {
++                DfControl::MinBufferFrames => min_buffer,
++                c => p.control_hist.get(&c),
++            })
 +            .collect();
 +        let mut conns = vec![
 +            PortConnection { port: desc.ports[0], data: PortData::AudioInput(&input) },
@@ -296,6 +363,56 @@ and all tests run one at a time (shared model, thread counting).
 +        }
 +        assert_eq!(p.proc_delay, hop, "latency not back at one frame after {steps} steps");
 +        assert!(steps >= 3, "{steps} decrease steps");
++    }
++
++    #[test]
++    fn min_buffer_is_a_floor_from_the_start() {
++        let _serial = serial();
++        let desc = get_ladspa_descriptor(0).unwrap();
++        let mut p = plugin_without_worker(&desc);
++        // The control change goes to the (stopped) worker: keep its channel open
++        let (control_tx, _control_rx) = sync_channel(32);
++        p.control_tx = control_tx;
++        let (hop, sr) = (p.frame_size, p.sr);
++        assert_eq!((p.proc_delay, queued(&p)), (hop, hop));
++        // Host blocks of 1.5 frames (PipeWire's 1024 > 480): only a floor that is in place before
++        // the first run() pops its output avoids waiting for the worker. Should run() wait, the
++        // samples arrive 100 ms late, i.e. as an underrun.
++        let n = hop + hop / 2;
++        let done = Arc::new(AtomicBool::new(false));
++        let rescue = {
++            let (o_rx, done) = (Arc::clone(&p.o_rx), Arc::clone(&done));
++            thread::spawn(move || {
++                sleep(Duration::from_millis(100));
++                if !done.load(Ordering::Relaxed) {
++                    for o_ch in o_rx.lock().unwrap().iter_mut() {
++                        o_ch.resize(o_ch.len() + n, 0.);
++                    }
++                }
++            })
++        };
++        cycle_with(&desc, &mut p, n, 1.);
++        done.store(true, Ordering::Relaxed);
++        rescue.join().unwrap();
++        // Two frames right after the first run(), without an underrun (that would add a third)
++        assert_eq!((p.proc_delay, queued(&p)), (2 * hop, 2 * hop), "first run()");
++        // After an underrun back to two frames, never one
++        cycle_underrun(&desc, &mut p, n);
++        assert_eq!((p.proc_delay, queued(&p)), (3 * hop, 3 * hop), "underrun");
++        let (mut since_change, mut steps) = (0, 0);
++        for c in 1..=30 * sr / n {
++            let before = p.proc_delay;
++            cycle(&desc, &mut p, n);
++            since_change += n;
++            assert_eq!(queued(&p), p.proc_delay, "cycle {c}: real latency differs from proc_delay");
++            assert!(p.proc_delay >= 2 * hop, "cycle {c}: below the two-frame floor");
++            if p.proc_delay != before {
++                (since_change, steps) = (0, steps + (p.proc_delay < before) as usize);
++            } else if p.proc_delay == 2 * hop && steps > 0 && since_change > 2 * sr {
++                break;
++            }
++        }
++        assert_eq!(p.proc_delay, 2 * hop, "latency not back at two frames after {steps} steps");
 +    }
 +
 +    #[test]

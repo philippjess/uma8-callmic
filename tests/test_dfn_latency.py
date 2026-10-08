@@ -4,15 +4,16 @@ import numpy as np
 import pytest
 
 from ladspa_host import Plugin
-from uma8_callmic.constants import dfn_plugin
+from uma8_callmic.constants import DFN_MIN_BUFFER_FRAMES, dfn_plugin
 
 DFN = str(dfn_plugin())
 
 
 def measure(limit_db: float) -> tuple[int, float]:
-    """Verzögerung (Samples) und Korrelationsstärke von deep_filter_mono."""
+    """Verzögerung (Samples) und Korrelationsstärke von deep_filter_mono mit dem Mindestpuffer der Kette."""
     p = Plugin(DFN, "deep_filter_mono", block=480)
     p.set("Attenuation Limit (dB)", limit_db)
+    p.set("Min Processing Buffer (frames)", float(DFN_MIN_BUFFER_FRAMES))
     x = (0.1 * np.random.default_rng(3).standard_normal(48000 * 4)).astype(np.float32)
     y = p.process({"Audio In": x})["Audio Out"]
     p.close()
@@ -26,6 +27,8 @@ def measure(limit_db: float) -> tuple[int, float]:
 
 @pytest.mark.skipif(not Path(DFN).exists(), reason="DeepFilterNet nicht installiert")
 def test_dfn_latency_constant_matches_measurement():
+    """Gegen das installierte Plugin: vor deepfilternet-ladspa 0.5.6-4 wirkt der Mindestpuffer erst nach einem
+    Underrun, dann misst der Test einen Frame (480 Samples) zu wenig."""
     from uma8_callmic.constants import DFN_LATENCY
 
     lag6, s6 = measure(6.0)

@@ -1,5 +1,5 @@
 from uma8_callmic.config import Config
-from uma8_callmic.constants import AEC_PRE_GAIN_DB, DFN_LATENCY
+from uma8_callmic.constants import AEC_PRE_GAIN_DB, DFN_LATENCY, DFN_MIN_BUFFER_FRAMES
 from uma8_callmic.params import (MIN_WNG_DB, NULL_KEYS, NULL_WEIGHT_DB, all_params, beam_gain_db, mix_params,
                                  null_params, processing_params, steering_params)
 
@@ -11,6 +11,8 @@ def test_all_params_cover_every_node():
     assert p["beam:Radius (mm)"] == 43.0
     assert p["beam:Raw Extra Delay (samples)"] == float(DFN_LATENCY)
     assert p["dfn:Attenuation Limit (dB)"] == 30.0
+    assert p["dfn:Min Processing Buffer (frames)"] == float(DFN_MIN_BUFFER_FRAMES) == 1.0
+    assert DFN_LATENCY == 1440  # 30 ms: 20 ms mit einem Frame Puffer plus ein Frame Mindestpuffer
     assert p["limit:Ceiling (dB)"] == -1.0
     assert p["beam:Gain (dB)"] == 30.0 - AEC_PRE_GAIN_DB == 12.0
     assert {k.split(":")[0] for k in p} == {"beam", "dfn", "mix", "limit"}
@@ -60,13 +62,15 @@ def test_gain_is_split_around_echo_cancel():
     assert -30.0 <= beam_gain_db(Config(gain_db=0.0)) and beam_gain_db(Config(gain_db=60.0)) <= 60.0  # Port-Bereich
 
 
-#: all_params vor dem Arbeitsplatz-Profil (Stand b2f0217), Standard-Einstellungen
+#: all_params vor dem Arbeitsplatz-Profil (Stand b2f0217), Standard-Einstellungen; seit dem DFN-Mindestpuffer
+#: (deepfilternet-ladspa 0.5.6-4) mit „Min Processing Buffer“ und 10 ms mehr „Raw Extra Delay“
 BEFORE_PROFILE = {
     'beam:Center Channel': 0.0, 'beam:Ring 0': 1.0, 'beam:Ring 1': 6.0, 'beam:Ring 2': 5.0, 'beam:Ring 3': 4.0,
     'beam:Ring 4': 3.0, 'beam:Ring 5': 2.0, 'beam:Ring Offset (deg)': 90.0, 'beam:Radius (mm)': 43.0,
-    'beam:Raw Extra Delay (samples)': 960.0, 'beam:Mode': 0.0, 'beam:Azimuth (deg)': 0.0, 'beam:Elevation (deg)': 20.0,
+    'beam:Raw Extra Delay (samples)': 1440.0, 'beam:Mode': 0.0, 'beam:Azimuth (deg)': 0.0, 'beam:Elevation (deg)': 20.0,
     'beam:Gain (dB)': 12.0, 'beam:Dereverb': 0.0, 'beam:Dereverb Strength': 0.6, 'beam:Dereverb T60 (s)': 0.5,
-    'beam:Late Reverb': 1.0, 'beam:Min WNG (dB)': -3.0, 'dfn:Attenuation Limit (dB)': 30.0, 'limit:Ceiling (dB)': -1.0,
+    'beam:Late Reverb': 1.0, 'beam:Min WNG (dB)': -3.0, 'dfn:Attenuation Limit (dB)': 30.0,
+    'dfn:Min Processing Buffer (frames)': 1.0, 'limit:Ceiling (dB)': -1.0,
     'mix:Gain 1': 1.0, 'mix:Gain 2': 0.0,
 }
 
