@@ -103,3 +103,5 @@ def dfn_plugin() -> Path:
 BEAM_LATENCY = 1024
 #: Latenz von deep_filter_mono (20 ms), gemessen mit tests/test_dfn_latency.py
 DFN_LATENCY = 960
+#: Latenz von uma8_limit: 5 ms Vorschau (plugin/src/limiter.rs), geprüft in tests/test_limit_plugin.py
+LIMIT_LATENCY = 240

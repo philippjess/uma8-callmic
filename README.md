@@ -181,6 +181,18 @@ nie wirklich ab, die Latenz wuchs über Tage auf Sekunden (behoben ab `deepfilte
 journalctl --user -u uma8-callmic-chain | grep -i latency
 ```
 
+Messen gegen das Roh-Array, gesamt und je Stufe (Vorverstärkung, Echounterdrückung, Ausgang):
+
+```sh
+python3 tools/latency_probe.py                    # 60 s, alle 10 s ein Wert je Stufe; dabei sprechen
+python3 tools/latency_probe.py --expect-max-ms 80 # als Prüfung: Exit 1, wenn der Median darüber liegt
+```
+
+Ein pw-record-Stream nimmt alle Stufen im selben Graphzyklus auf, der Versatz zwischen den Spalten ist also die
+echte Latenz. Den Ausgang misst das Werkzeug über Pegelwechsel: währenddessen sprechen, Fenster mit Stille bleiben
+leer. Der Ton bleibt im Speicher, ausgegeben werden nur Zahlen. Die Zusammenfassung zeigt die Abweichung vom Soll;
+positiv heißt zusätzlich gepuffert.
+
 ## Tests
 
 ```sh
@@ -188,6 +200,7 @@ python -m pytest                                  # Unit-Tests
 cargo test --manifest-path plugin/Cargo.toml      # Rust-Tests
 python -m pytest -m integration                   # nach der Installation, braucht PipeWire
 python3 tools/check_output.py                     # mit angeschlossenem UMA-8
+python3 tools/latency_probe.py --expect-max-ms 80 # mit laufender Kette, dabei sprechen (siehe Latenz)
 ```
 
 Die RPM- und Arch-Bauten führen die Unit- und Rust-Tests beider Pakete ebenfalls aus (`%check`, `check()`), ohne
