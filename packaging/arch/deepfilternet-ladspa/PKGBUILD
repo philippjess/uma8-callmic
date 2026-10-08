@@ -4,7 +4,7 @@
 # ebenfalls in packaging/deepfilternet-ladspa.sources. Gedacht für `cd packaging/arch/deepfilternet-ladspa && makepkg -si`.
 pkgname=deepfilternet-ladspa
 pkgver=0.5.6
-pkgrel=2
+pkgrel=3
 pkgdesc='DeepFilterNet-Rauschunterdrückung als LADSPA-Plugin (mit behobenem Thread-Leck und Latenzabbau)'
 arch=(x86_64 aarch64)
 url='https://github.com/Rikorose/DeepFilterNet'

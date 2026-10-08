@@ -189,7 +189,7 @@ python3 tools/latency_probe.py --expect-max-ms 80 # als Prüfung: Exit 1, wenn d
 ```
 
 Ein pw-record-Stream nimmt alle Stufen im selben Graphzyklus auf, der Versatz zwischen den Spalten ist also die
-echte Latenz. Den Ausgang misst das Werkzeug über Pegelwechsel: währenddessen sprechen, Fenster mit Stille bleiben
+echte Latenz. Er fordert das Quantum eines Anrufs an (mit Echounterdrückung 480 Samples, sonst `clock.quantum`). Den Ausgang misst das Werkzeug über Pegelwechsel: währenddessen sprechen, Fenster mit Stille bleiben
 leer. Der Ton bleibt im Speicher, ausgegeben werden nur Zahlen. Die Zusammenfassung zeigt die Abweichung vom Soll;
 positiv heißt zusätzlich gepuffert.
 

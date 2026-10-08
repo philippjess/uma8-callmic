@@ -15,42 +15,65 @@ day or two of occasional underruns).
   run() would then wait for the worker in every cycle.
 - Cap the added latency at 1 s instead of panicking: the guard is reachable now,
   and a panic in run() aborts the host (e.g. a PipeWire filter-chain process).
-  The error is logged once when the cap is reached.
-- Keep the 10 s hold after an underrun, but take further steps every 1 s instead
-  of every 10 s, so a burst of underruns no longer takes many minutes to drain.
+  The error is logged once when the cap is reached; underruns at the cap are
+  only counted (no log line per cycle from the audio thread) and the count is
+  logged when the latency decreases again.
+- Count the time since the last latency change in samples instead of run()
+  calls, which matched seconds only at a 480-sample host block size (PipeWire
+  runs 1024 by default). Keep the 10 s hold after an underrun, but take further
+  steps every 1 s instead of every 10 s, so a burst of underruns no longer takes
+  many minutes to drain.
 - Log latency changes at warn level (visible with the default log filter), so
   the log is a time series of the plugin's latency.
 
-The new unit tests drive run() with the worker thread stopped and check that the
-queued samples follow proc_delay through underruns and recovery and that the
-cap holds without a panic. The thread-count test ignores the test harness
-threads, and all tests run one at a time (shared model, thread counting).
+The new unit tests drive run() with the worker thread stopped, using half-frame
+host blocks, and check that the queued samples follow proc_delay through
+underruns and recovery, with hold and step times in samples, and that the cap
+holds without a panic. The thread-count test ignores the test harness threads,
+and all tests run one at a time (shared model, thread counting).
 
 --- a/ladspa/src/lib.rs
 +++ b/ladspa/src/lib.rs
-@@ -440,51 +440,58 @@
+@@ -57,7 +57,8 @@
+     sr: usize,
+     frame_size: usize,
+     proc_delay: usize,
+-    t_proc_change: usize,
++    t_proc_change: usize,     // Samples since the last latency change
++    capped_underruns: usize,  // Underruns at the latency cap, not logged individually
+     sleep_duration: Duration,
+     control_hist: DfControlHistory,
+     stop: Arc<AtomicBool>,      // Tells the worker thread to exit (set on drop)
+@@ -251,6 +252,7 @@
+             frame_size,
+             proc_delay,
+             t_proc_change: 0,
++            capped_underruns: 0,
+             sleep_duration,
+             control_hist: hist,
+             stop,
+@@ -440,58 +442,77 @@
          let td = t0.elapsed();
          let t_audio = sample_count as f32 / self.sr as f32;
          let rtf = td.as_secs_f32() / t_audio;
 +        // Upper bound for the added latency (1 s, the former panic threshold)
 +        let max_delay = self.sr;
          if rtf >= 1. {
-             log::warn!(
-                 "DF {} | Underrun detected (RTF: {:.2}). Processing too slow!",
-                 self.id,
-                 rtf
-             );
+-            log::warn!(
+-                "DF {} | Underrun detected (RTF: {:.2}). Processing too slow!",
+-                self.id,
+-                rtf
+-            );
 -            if self.proc_delay >= self.sr {
 -                panic!(
 -                    "DF {} | Processing too slow! Please upgrade your CPU. Try to decrease 'Max DF processing threshold (dB)'.",
 +            // A panic here would abort the host process (e.g. the whole PipeWire filter chain).
 +            // At the cap keep the latency as it is instead.
 +            if self.proc_delay + self.frame_size <= max_delay {
-+                self.proc_delay += self.frame_size;
 +                log::warn!(
-+                    "DF {} | Increasing processing latency to {:.1}ms",
++                    "DF {} | Underrun detected (RTF: {:.2}). Processing too slow!",
                      self.id,
-+                    self.proc_delay as f32 * 1000. / self.sr as f32
++                    rtf
                  );
 -            }
 -            self.proc_delay += self.frame_size;
@@ -63,20 +86,30 @@ threads, and all tests run one at a time (shared model, thread counting).
 -            for o_ch in self.o_rx.lock().unwrap().iter_mut() {
 -                for _ in 0..self.frame_size {
 -                    o_ch.push_back(0f32)
++                self.proc_delay += self.frame_size;
++                log::warn!(
++                    "DF {} | Increasing processing latency to {:.1}ms",
++                    self.id,
++                    self.proc_delay as f32 * 1000. / self.sr as f32
++                );
 +                if self.proc_delay + self.frame_size > max_delay {
 +                    log::error!(
-+                        "DF {} | Processing latency reached its maximum, not increasing it further. Processing too slow! Try to decrease 'Max DF processing threshold (dB)'.",
++                        "DF {} | Processing latency reached its maximum, not increasing it further. Processing too slow! Try to decrease 'Max DF processing threshold (dB)'. Further underruns are counted and reported when the latency decreases.",
 +                        self.id,
 +                    );
-+                }
+                 }
 +                for o_ch in self.o_rx.lock().unwrap().iter_mut() {
 +                    for _ in 0..self.frame_size {
 +                        o_ch.push_back(0f32)
 +                    }
-                 }
++                }
++            } else {
++                // No log line per cycle from the audio thread while stuck at the cap
++                self.capped_underruns += 1;
              }
+-        } else if self.t_proc_change > 10 * self.sr / self.frame_size
 +            self.t_proc_change = 0;
-         } else if self.t_proc_change > 10 * self.sr / self.frame_size
++        } else if self.t_proc_change > 10 * self.sr
              && rtf < 0.5
              && self.proc_delay
 -                >= self.frame_size * (1 + self.control_hist.min_buffer_frames as usize)
@@ -102,12 +135,29 @@ threads, and all tests run one at a time (shared model, thread counting).
 -                self.t_proc_change = 0;
 -                log::info!(
 +                // 10 s hold after an underrun, but only 1 s between further steps
-+                self.t_proc_change = 9 * self.sr / self.frame_size;
++                self.t_proc_change = 9 * self.sr;
 +                log::warn!(
                      "DF {} | Decreasing processing latency to {:.1}ms",
                      self.id,
                      self.proc_delay as f32 * 1000. / self.sr as f32
-@@ -749,9 +756,26 @@
+                 );
++                if self.capped_underruns > 0 {
++                    log::warn!(
++                        "DF {} | {} underruns at the maximum latency were not logged individually",
++                        self.id,
++                        self.capped_underruns
++                    );
++                    self.capped_underruns = 0;
++                }
+             }
+         }
+-        self.t_proc_change += 1;
++        // Time since the last latency change, in samples (independent of the host's block size)
++        self.t_proc_change += sample_count;
+     }
+ }
+ 
+@@ -749,9 +770,26 @@
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -116,11 +166,11 @@ threads, and all tests run one at a time (shared model, thread counting).
 +
 +    // The tests count threads and share the global model: run them one at a time
 +    static SERIAL: Mutex<()> = Mutex::new(());
-+
+ 
 +    fn serial() -> std::sync::MutexGuard<'static, ()> {
 +        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 +    }
- 
++
 +    /// Threads of this process. Harness threads of the other tests (named after their test) come
 +    /// and go while the tests take turns, so they don't count; threads spawned by this test inherit
 +    /// its thread name and do.
@@ -135,7 +185,7 @@ threads, and all tests run one at a time (shared model, thread counting).
      }
  
      /// Thread count once it reaches `want`; a joined thread may stay listed for a moment.
-@@ -768,6 +792,7 @@
+@@ -768,6 +806,7 @@
  
      #[test]
      fn cleanup_stops_worker_threads() {
@@ -143,7 +193,7 @@ threads, and all tests run one at a time (shared model, thread counting).
          for (index, channels) in [(0, 1), (1, 2)] {
              let desc = get_ladspa_descriptor(index).unwrap();
              // Warm-up: the first instance loads the model; one-off threads stay out of the baseline.
-@@ -782,4 +807,109 @@
+@@ -782,4 +821,122 @@
              assert_eq!(settled_thread_count(base), base, "{channels} ch: worker threads leaked");
          }
      }
@@ -162,10 +212,9 @@ threads, and all tests run one at a time (shared model, thread counting).
 +        p.o_rx.lock().unwrap()[0].len()
 +    }
 +
-+    /// One host cycle of one frame through run(), then a worker that keeps up (all input moved
++    /// One host cycle of `n` samples through run(), then a worker that keeps up (all input moved
 +    /// to the output queue).
-+    fn cycle(desc: &PluginDescriptor, p: &mut DfPlugin) {
-+        let n = p.frame_size;
++    fn cycle(desc: &PluginDescriptor, p: &mut DfPlugin, n: usize) {
 +        let input = vec![0f32; n];
 +        let mut output = vec![0f32; n];
 +        // Same values as the control history, so nothing is sent to the stopped worker
@@ -193,7 +242,7 @@ threads, and all tests run one at a time (shared model, thread counting).
 +    }
 +
 +    /// Like `cycle`, but the output becomes available only 20 ms (two frames) late: an underrun
-+    fn cycle_underrun(desc: &PluginDescriptor, p: &mut DfPlugin) {
++    fn cycle_underrun(desc: &PluginDescriptor, p: &mut DfPlugin, n: usize) {
 +        let held: Vec<VecDeque<f32>> =
 +            p.o_rx.lock().unwrap().iter_mut().map(std::mem::take).collect();
 +        let o_rx = Arc::clone(&p.o_rx);
@@ -203,7 +252,7 @@ threads, and all tests run one at a time (shared model, thread counting).
 +                o_ch.extend(h);
 +            }
 +        });
-+        cycle(desc, p);
++        cycle(desc, p, n);
 +        late.join().unwrap();
 +    }
 +
@@ -212,28 +261,41 @@ threads, and all tests run one at a time (shared model, thread counting).
 +        let _serial = serial();
 +        let desc = get_ladspa_descriptor(0).unwrap();
 +        let mut p = plugin_without_worker(&desc);
-+        let hop = p.frame_size;
++        let (hop, sr) = (p.frame_size, p.sr);
++        // Half-frame host blocks: hold and step times must count samples, not run() calls
++        let n = hop / 2;
 +        assert_eq!((p.proc_delay, queued(&p)), (hop, hop));
 +        for k in 1..=3 {
-+            cycle_underrun(&desc, &mut p);
++            cycle_underrun(&desc, &mut p, n);
 +            assert_eq!((p.proc_delay, queued(&p)), (hop * (1 + k), hop * (1 + k)), "underrun {k}");
 +        }
-+        // 10 s (1000 cycles of 10 ms) after the last underrun one frame less, then one per
-+        // second, down to the initial one-frame buffer
-+        let mut steps = vec![];
-+        for n in 1..=1600 {
++        // 10 s after an underrun one frame less, then one per second, down to the initial
++        // one-frame buffer. A real underrun (test thread preempted) adds a frame and restarts
++        // the hold; the checks hold either way.
++        let (mut since_change, mut after_underrun, mut steps) = (0, true, 0);
++        for c in 1..=60 * sr / n {
 +            let before = p.proc_delay;
-+            cycle(&desc, &mut p);
-+            assert_eq!(queued(&p), p.proc_delay, "cycle {n}: real latency differs from proc_delay");
-+            if p.proc_delay != before {
-+                assert_eq!(before - p.proc_delay, hop, "cycle {n}: one frame per step");
-+                steps.push(n);
++            cycle(&desc, &mut p, n);
++            since_change += n;
++            assert_eq!(queued(&p), p.proc_delay, "cycle {c}: real latency differs from proc_delay");
++            assert!(p.proc_delay >= hop, "cycle {c}: below the one-frame buffer");
++            if p.proc_delay > before {
++                assert_eq!(p.proc_delay - before, hop, "cycle {c}: one frame per underrun");
++                (since_change, after_underrun) = (0, true);
++            } else if p.proc_delay < before {
++                assert_eq!(before - p.proc_delay, hop, "cycle {c}: one frame per step");
++                let (min, max) = if after_underrun { (10 * sr, 15 * sr) } else { (sr, 3 * sr / 2) };
++                assert!(
++                    since_change > min && since_change <= max,
++                    "cycle {c}: step after {since_change} samples, expected {min}..{max}"
++                );
++                (since_change, after_underrun, steps) = (0, false, steps + 1);
++            } else if p.proc_delay == hop && since_change > 2 * sr {
++                break;
 +            }
 +        }
-+        assert_eq!(p.proc_delay, hop, "decrease steps at cycles {steps:?}");
-+        assert_eq!(steps.len(), 3, "decrease steps at cycles {steps:?}");
-+        assert!(steps[0] > 1000, "decrease steps at cycles {steps:?}");
-+        assert!(steps.windows(2).all(|w| w[1] - w[0] > 100), "decrease steps at cycles {steps:?}");
++        assert_eq!(p.proc_delay, hop, "latency not back at one frame after {steps} steps");
++        assert!(steps >= 3, "{steps} decrease steps");
 +    }
 +
 +    #[test]
@@ -247,9 +309,10 @@ threads, and all tests run one at a time (shared model, thread counting).
 +        for o_ch in p.o_rx.lock().unwrap().iter_mut() {
 +            o_ch.resize(cap - hop, 0.);
 +        }
-+        cycle_underrun(&desc, &mut p);
-+        assert_eq!((p.proc_delay, queued(&p)), (cap, cap));
-+        cycle_underrun(&desc, &mut p);
-+        assert_eq!((p.proc_delay, queued(&p)), (cap, cap));
++        cycle_underrun(&desc, &mut p, hop);
++        assert_eq!((p.proc_delay, queued(&p), p.capped_underruns), (cap, cap, 0));
++        // At the cap: no more latency, no panic; counted instead of logged
++        cycle_underrun(&desc, &mut p, hop);
++        assert_eq!((p.proc_delay, queued(&p), p.capped_underruns), (cap, cap, 1));
 +    }
  }

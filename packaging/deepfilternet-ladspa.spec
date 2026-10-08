@@ -6,7 +6,7 @@
 
 Name:           deepfilternet-ladspa
 Version:        0.5.6
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        DeepFilterNet-Rauschunterdrückung als LADSPA-Plugin
 
 # DeepFilterNet (Code und mitgelieferte Modelle): MIT OR Apache-2.0. Dazu die statisch gelinkten Crates,
@@ -83,6 +83,11 @@ install -Dpm0755 target/rpm/libdeep_filter_ladspa.so %{buildroot}%{_libdir}/lads
 %{_libdir}/ladspa/libdeep_filter_ladspa.so
 
 %changelog
+* Thu Oct 08 2026 Philipp <philipp@rootshell.dev> - 0.5.6-3
+- Halte- und Schrittzeit des Latenzabbaus in Samples statt run()-Aufrufen
+  (ergab nur bei einem Quantum von 480 Sekunden; PipeWire-Standard ist 1024)
+- Underruns an der Obergrenze nur zählen statt in jedem Zyklus zu loggen
+
 * Thu Oct 08 2026 Philipp <philipp@rootshell.dev> - 0.5.6-2
 - Latenzabbau nach Underruns verwirft einen ganzen Frame statt nur eines Samples
   (die Latenz wuchs mit jedem Underrun um 10 ms dauerhaft)

@@ -1,5 +1,6 @@
 """Schätzfunktionen von tools/latency_probe.py an synthetischen Signalen mit bekanntem Versatz."""
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -135,3 +136,24 @@ def test_report_checks_median_against_expect_max(capsys):
     expected = 10 + (K.BEAM_LATENCY + K.DFN_LATENCY + K.LIMIT_LATENCY) * 1000 / SR
     assert f"= {expected:.1f} ms" in text
     assert "nicht prüfbar" in text
+
+
+def test_call_quantum_from_echo_cancel_or_settings():
+    aec = {"type": "PipeWire:Interface:Node", "info": {"props": {"node.name": K.AEC_NODE,
+                                                                  "node.latency": "480/48000"}}}
+    settings = {"type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "settings"},
+                "metadata": [{"subject": 0, "key": "clock.quantum", "type": "", "value": 1024}]}
+    assert probe.call_quantum([settings, aec]) == 480
+    assert probe.call_quantum([settings]) == 1024
+    assert probe.call_quantum([]) == probe.DEFAULT_QUANTUM
+    cmd = probe.record_command("n", 4, 480)
+    assert cmd[cmd.index("--latency") + 1] == "480"
+
+
+@pytest.mark.parametrize("exc", [subprocess.TimeoutExpired("pw-link", 5), FileNotFoundError("pw-link")])
+def test_link_failures_are_probe_errors(monkeypatch, exc):
+    def fail(*args, **kwargs):
+        raise exc
+    monkeypatch.setattr(probe.subprocess, "run", fail)
+    with pytest.raises(probe.ProbeError, match="pw-link a b"):
+        probe.link("a", "b")
