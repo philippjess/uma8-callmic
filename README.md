@@ -202,7 +202,9 @@ leer. Der Ton bleibt im Speicher, ausgegeben werden nur Zahlen. Die Zusammenfass
 positiv heißt zusätzlich gepuffert.
 
 Die absolute Gesamtlatenz hängt vom Aufbau ab. Die Echounterdrückung misst hier etwa 30 ms (Quantum 256, kabelgebundener
-Ausgang; insgesamt etwa 86 ms), auf einem zweiten Aufbau (Bluetooth-Standardausgang) etwa 41 ms, Ursache offen. PipeWire
+Ausgang, Fedora mit webrtc-audio-processing 2.1; insgesamt etwa 86 ms), auf einem zweiten Aufbau (Arch mit
+webrtc-audio-processing 1.3) etwa 41 ms, bei gleichem Quantum und auch mit kabelgebundenem Ausgang; vermutlich liegt es
+an der WebRTC-Version (nicht gegengeprüft). PipeWire
 rundet das angeforderte 480 standardmäßig auf eine Zweierpotenz ab (256, `clock.power-of-two-quantum`). Als Rückschrittprüfung (etwa DeepFilterNet-Pufferwachstum)
 taugt darum `--max-excess-ms 10`: Es vergleicht den Ausgang mit dem Soll aus der gemessenen Echounterdrückung und ist
 vom Aufbau unabhängig. `--expect-max-ms` ist ein fester Wert für einen bekannten Aufbau. Exit: 0 in Ordnung,

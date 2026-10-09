@@ -22,7 +22,9 @@ Das ist nur die Anforderung: PipeWire nimmt das kleinste Quantum aller aktiven K
 des Treibers der Raw-Quelle liest das Werkzeug nach dem Verbinden und am Ende aus pw-top und gibt es aus.
 
 Die absolute Gesamtlatenz hängt vom Aufbau ab. Die Echounterdrückung misst hier etwa 30 ms (Quantum 256, kabelgebundener
-Ausgang; insgesamt etwa 86 ms), auf einem zweiten Aufbau (Bluetooth-Standardausgang) etwa 41 ms, Ursache offen. PipeWire
+Ausgang, Fedora mit webrtc-audio-processing 2.1; insgesamt etwa 86 ms), auf einem zweiten Aufbau (Arch mit
+webrtc-audio-processing 1.3) etwa 41 ms, bei gleichem Quantum und auch mit kabelgebundenem Ausgang; vermutlich liegt es
+an der WebRTC-Version (nicht gegengeprüft). PipeWire
 rundet das angeforderte 480 standardmäßig auf eine Zweierpotenz ab (256, clock.power-of-two-quantum).
 Als Rückschrittprüfung taugt daher --max-excess-ms (Ausgang minus Soll mit gemessener Echounterdrückung), nicht
 der absolute --expect-max-ms.
