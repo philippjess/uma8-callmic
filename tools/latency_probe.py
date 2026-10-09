@@ -21,8 +21,9 @@ pw-records Vorgabe von 100 ms höbe es sonst, wenn niemand anderes aufnimmt, auf
 Das ist nur die Anforderung: PipeWire nimmt das kleinste Quantum aller aktiven Knoten. Das tatsächliche Quantum
 des Treibers der Raw-Quelle liest das Werkzeug nach dem Verbinden und am Ende aus pw-top und gibt es aus.
 
-Die Gesamtlatenz hängt vom Aufbau ab, vor allem vom Quantum: Die Echounterdrückung (WebRTC rechnet in festen
-480-Samples-Blöcken) misst bei Quantum 480 etwa 30 ms, bei 256 etwa 41 ms; mit ihr ergeben sich bei 480 etwa 86 ms.
+Die absolute Gesamtlatenz hängt vom Aufbau ab. Die Echounterdrückung misst hier etwa 30 ms (Quantum 256, kabelgebundener
+Ausgang; insgesamt etwa 86 ms), auf einem zweiten Aufbau (Bluetooth-Standardausgang) etwa 41 ms, Ursache offen. PipeWire
+rundet das angeforderte 480 standardmäßig auf eine Zweierpotenz ab (256, clock.power-of-two-quantum).
 Als Rückschrittprüfung taugt daher --max-excess-ms (Ausgang minus Soll mit gemessener Echounterdrückung), nicht
 der absolute --expect-max-ms.
 Exit: 0 in Ordnung, 1 Schwelle überschritten oder nicht prüfbar, 2 Knoten fehlt oder Aufnahme scheitert.
@@ -208,8 +209,6 @@ def _ports(flag: str) -> set[str]:
 
 #: Quantum, wenn PipeWire nichts anderes meldet (clock.quantum ab Werk)
 DEFAULT_QUANTUM = 1024
-#: WebRTC-AEC3 rechnet in festen Blöcken von 10 ms
-AEC_BLOCK = SR // 100
 
 
 def call_quantum(objs: list[dict]) -> int:
@@ -269,13 +268,6 @@ def quantum_text(actual: int | None, requested: int) -> str:
     if actual is None:
         return f"Quantum unbekannt (angefordert {requested} Samples)"
     return f"Quantum {actual} Samples ({actual * 1000 / SR:g} ms), angefordert {requested}"
-
-
-def quantum_note(actual: int | None, aec: bool) -> str | None:
-    if aec and actual is not None and actual % AEC_BLOCK:
-        return (f"Hinweis: Quantum {actual} ist kein Vielfaches von {AEC_BLOCK}; die Echounterdrückung "
-                "(WebRTC rechnet in 10-ms-Blöcken) puffert dann zusätzlich")
-    return None
 
 
 def discover() -> tuple[str, list[Stage], int]:
@@ -341,8 +333,6 @@ def measure(raw_port: str, stages: list[Stage], quantum: int, seconds: float, wi
         if quanta is not None:
             quanta.append(graph_quantum(node_raw))
             print(quantum_text(quanta[-1], quantum), flush=True)
-            if note := quantum_note(quanta[-1], any(st.label == "Echounterdrückung" for st in stages)):
-                print(note, flush=True)
         for k in range(int((seconds * SR - lag_n) // win_n)):
             end = start + lag_n + (k + 1) * win_n
             _wait(cap, end, window + 10)

@@ -195,14 +195,9 @@ def test_graph_quantum_unknown_on_failure(monkeypatch):
     assert probe.graph_quantum("x") is None
 
 
-def test_quantum_text_and_note():
+def test_quantum_text():
     assert probe.quantum_text(256, 480) == "Quantum 256 Samples (5.33333 ms), angefordert 480"
     assert "unbekannt" in probe.quantum_text(None, 480)
-    assert "puffert" in probe.quantum_note(256, True)
-    assert probe.quantum_note(480, True) is None
-    assert probe.quantum_note(960, True) is None
-    assert probe.quantum_note(256, False) is None
-    assert probe.quantum_note(None, True) is None
 
 
 def test_report_max_excess_is_setup_independent(capsys):
@@ -213,7 +208,7 @@ def test_report_max_excess_is_setup_independent(capsys):
     def rows(aec, out):
         return [[ms(aec), ms(out)]] * 3
 
-    for aec in (30.0, 41.0):  # Quantum 480 bzw. 256: gemessene Echounterdrückung geht ins Soll ein
+    for aec in (30.0, 41.0):  # zwei Aufbauten: gemessene Echounterdrückung geht ins Soll ein
         assert probe.report(stages, rows(aec, aec + fixed + 0.8), None, 10) == 0
         assert probe.report(stages, rows(aec, aec + fixed + 10.5), None, 10) == 1
     assert probe.report(stages, rows(41.0, 97.0), 90) == 1  # absolut scheitert, obwohl nichts falsch ist

@@ -201,11 +201,11 @@ am Ende aus `pw-top` und gibt es aus („unbekannt“, wenn es sich nicht ermitt
 leer. Der Ton bleibt im Speicher, ausgegeben werden nur Zahlen. Die Zusammenfassung zeigt die Abweichung vom Soll;
 positiv heißt zusätzlich gepuffert.
 
-Die absolute Gesamtlatenz hängt vom Aufbau ab, vor allem vom Quantum des Graphen: WebRTC rechnet in 10-ms-Blöcken
-(480 Samples), und passt das Quantum nicht dazu, puffert die Echounterdrückung zusätzlich. Sie misst bei Quantum 480
-etwa 30 ms (insgesamt etwa 86 ms), bei 256 etwa 41 ms. Als Rückschrittprüfung (etwa DeepFilterNet-Pufferwachstum)
+Die absolute Gesamtlatenz hängt vom Aufbau ab. Die Echounterdrückung misst hier etwa 30 ms (Quantum 256, kabelgebundener
+Ausgang; insgesamt etwa 86 ms), auf einem zweiten Aufbau (Bluetooth-Standardausgang) etwa 41 ms, Ursache offen. PipeWire
+rundet das angeforderte 480 standardmäßig auf eine Zweierpotenz ab (256, `clock.power-of-two-quantum`). Als Rückschrittprüfung (etwa DeepFilterNet-Pufferwachstum)
 taugt darum `--max-excess-ms 10`: Es vergleicht den Ausgang mit dem Soll aus der gemessenen Echounterdrückung und ist
-vom Quantum unabhängig. `--expect-max-ms` ist ein fester Wert für einen bekannten Aufbau. Exit: 0 in Ordnung,
+vom Aufbau unabhängig. `--expect-max-ms` ist ein fester Wert für einen bekannten Aufbau. Exit: 0 in Ordnung,
 1 Schwelle überschritten oder nicht prüfbar, 2 Knoten fehlt oder Aufnahme scheitert.
 
 ## Tests
