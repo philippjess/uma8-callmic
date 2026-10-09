@@ -1,11 +1,11 @@
 # Maintainer: Philipp <philipp@rootshell.dev>
-# DeepFilterNet-LADSPA-Plugin aus dem Quelltext, mit denselben zwei Patches wie das RPM (packaging/*.patch, eine
+# DeepFilterNet-LADSPA-Plugin aus dem Quelltext, mit denselben drei Patches wie das RPM (packaging/*.patch, eine
 # Quelle der Wahrheit: sie liegen im Repo und werden von hier aus per Pfad angewendet). Der Tarball-Hash steht
 # ebenfalls in packaging/deepfilternet-ladspa.sources. Gedacht für `cd packaging/arch/deepfilternet-ladspa && makepkg -si`.
 pkgname=deepfilternet-ladspa
 pkgver=0.5.6
-pkgrel=1
-pkgdesc='DeepFilterNet-Rauschunterdrückung als LADSPA-Plugin (mit behobenem Thread-Leck)'
+pkgrel=4
+pkgdesc='DeepFilterNet-Rauschunterdrückung als LADSPA-Plugin (mit behobenem Thread-Leck und Latenzabbau)'
 arch=(x86_64 aarch64)
 url='https://github.com/Rikorose/DeepFilterNet'
 # DeepFilterNet selbst: MIT OR Apache-2.0; dazu statisch gelinkte Crates (LICENSE.dependencies) und jemalloc (BSD-2-Clause)
@@ -24,9 +24,11 @@ _pkgdir="$startdir/../.."   # packaging/
 
 prepare() {
   cd "DeepFilterNet-$pkgver"
-  # time 0.3.28 baut mit aktuellem Rust nicht (E0282): Lockfile auf 0.3.36; Thread-Leck: Stop-Flag + join
+  # time 0.3.28 baut mit aktuellem Rust nicht (E0282): Lockfile auf 0.3.36; Thread-Leck: Stop-Flag + join;
+  # Latenzabbau nach Underruns nahm nur 1 Sample statt 10 ms zurück (Latenz wuchs über Tage auf Sekunden)
   patch -Np1 --fuzz=0 -i "$_pkgdir/deepfilternet-0.5.6-time-0.3.36.patch"
   patch -Np1 --fuzz=0 -i "$_pkgdir/deepfilternet-0.5.6-ladspa-worker-thread.patch"
+  patch -Np1 --fuzz=0 -i "$_pkgdir/deepfilternet-0.5.6-ladspa-latency.patch"
   export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
 }
@@ -42,7 +44,8 @@ build() {
 
 check() {
   cd "DeepFilterNet-$pkgver"
-  # u. a. der Thread-Leck-Test aus dem Patch: Instanzen anlegen und aufräumen lässt keine Threads zurück
+  # u. a. die Tests aus den Patches: Instanzen anlegen und aufräumen lässt keine Threads zurück; die Latenz folgt
+  # Underruns und Abbau, bleibt ohne panic unter der Obergrenze und hält den Mindestpuffer ab dem ersten run()
   cargo test --frozen --release -p deep-filter-ladspa
 }
 

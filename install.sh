@@ -31,11 +31,11 @@ need cargo cargo rust
 python3 -c 'import PySide6, numpy' 2>/dev/null \
     || fail "Python-Module fehlen – Fedora: sudo dnf install python3-pyside6 python3-numpy · Arch: sudo pacman -S pyside6 python-numpy"
 DFN="$(PYTHONPATH="$REPO" python3 -c 'from uma8_callmic import constants as K; print(K.dfn_plugin())')"
-[ -f "$DFN" ] || fail "DeepFilterNet fehlt ($DFN). Paket deepfilternet-ladspa aus diesem Repo (mit behobenem Thread-Leck):
+[ -f "$DFN" ] || fail "DeepFilterNet fehlt ($DFN). Paket deepfilternet-ladspa aus diesem Repo (mit behobenem Thread-Leck und Latenzabbau):
        Fedora: ./packaging/build-rpms.sh deepfilternet-ladspa, dann sudo dnf install packaging/out/deepfilternet-ladspa-*.x86_64.rpm
        Arch:   ./packaging/build-arch.sh deepfilternet-ladspa, dann sudo pacman -U packaging/out/arch/deepfilternet-ladspa-*.pkg.tar.zst
                (oder: cd packaging/arch/deepfilternet-ladspa && makepkg -si)
-       Alternative auf Arch: yay -S deepfilternet-plugin-pipewire-bin (behält das Thread-Leck)"
+       Alternative auf Arch: yay -S deepfilternet-plugin-pipewire-bin (behält Thread-Leck und wachsende Latenz)"
 lsusb -d 2752:001d >/dev/null 2>&1 || echo "Hinweis: UMA-8 mit Raw-Firmware (2752:001d) nicht gefunden – Installation läuft weiter."
 
 say "Plugin bauen"

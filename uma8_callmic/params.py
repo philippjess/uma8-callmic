@@ -1,6 +1,6 @@
 """Einstellungen → Controls der Filterkette („<knoten>:<control>“)."""
 from .config import Config
-from .constants import AEC_PRE_GAIN_DB, DFN_LATENCY
+from .constants import AEC_PRE_GAIN_DB, DFN_LATENCY, DFN_MIN_BUFFER_FRAMES
 
 #: Control „Mode“ von uma8_beam; 1 = alle Richtungen (nur Mittel-Mikrofon)
 BEAM_MODES = {"superdirective": 0.0, "delay_and_sum": 2.0}
@@ -51,6 +51,7 @@ def processing_params(cfg: Config) -> dict[str, float]:
         "beam:Late Reverb": 1.0 if cfg.late_reverb else 0.0,
         "beam:Min WNG (dB)": MIN_WNG_DB,
         "dfn:Attenuation Limit (dB)": float(cfg.noise_reduction_db),
+        "dfn:Min Processing Buffer (frames)": float(DFN_MIN_BUFFER_FRAMES),
         "limit:Ceiling (dB)": float(cfg.ceiling_db),
     }
 

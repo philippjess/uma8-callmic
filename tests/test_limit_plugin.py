@@ -1,6 +1,7 @@
 import numpy as np
 
 from ladspa_host import Plugin
+from uma8_callmic.constants import LIMIT_LATENCY
 
 
 def test_limit_plugin_has_expected_ports(plugin_so):
@@ -24,4 +25,4 @@ def test_limit_plugin_quiet_signal_unchanged_after_latency(plugin_so):
     x = (0.1 * np.sin(2 * np.pi * 440 * np.arange(9600) / 48000)).astype(np.float32)
     out = p.process({"In": x})["Out"]
     p.close()
-    np.testing.assert_allclose(out[240:], x[:-240], atol=1e-6)
+    np.testing.assert_allclose(out[LIMIT_LATENCY:], x[:-LIMIT_LATENCY], atol=1e-6)
